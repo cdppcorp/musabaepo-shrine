@@ -1,0 +1,25 @@
+# PR · push마다 서버 타입 검사와 화면 코드 문법 검사를 돌립니다.
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: 서버 타입 검사
+        run: npx tsc --noEmit -p .
+      - name: 화면 코드 문법 검사
+        run: for f in public/js/*.js; do node --check "$f"; done

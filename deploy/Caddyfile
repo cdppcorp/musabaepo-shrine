@@ -1,0 +1,137 @@
+# 무사배포 기원소 — 독립 도메인. https 인증서는 Caddy가 자동으로 받습니다.
+# .env의 SHRINE_DOMAIN(예: shrine.example.com) A 레코드를 이 서버 IP로 걸어 두면 됩니다.
+# 설정 설명과 운영 절차는 deploy/README.md에 있습니다.
+{
+	# 인증서(ACME) 계정 메일. 발급 문제 · 약관 변경 안내가 옵니다. .env의 ACME_EMAIL (비어 있으면 Caddy가 시작하지 않습니다)
+	email {$ACME_EMAIL}
+
+	# Caddy 자체 기록(시작 · 인증서 · 오류)은 stderr → Docker 로그(10MB × 5개, docker-compose.yml).
+	# 오류 기록에 요청 정보가 붙는 경우에도 IP는 앞부분만 남기고 헤더는 지웁니다.
+	log default {
+		output stderr
+		format filter {
+			wrap console
+			fields {
+				request>remote_ip ip_mask {
+					ipv4 24
+					ipv6 32
+				}
+				request>client_ip ip_mask {
+					ipv4 24
+					ipv6 32
+				}
+				request>remote_port delete
+				request>headers delete
+			}
+		}
+	}
+
+	# Cloudflare 프록시(주황 구름)를 켤 때만 주석을 풉니다. 안 풀면 모든 방문자가 Cloudflare IP로 보여 IP 제한에 같이 걸립니다.
+	# 대역은 https://www.cloudflare.com/ips/ 목록을 그대로 적고, 아래 reverse_proxy 안의 header_up 줄도 함께 풉니다.
+	# servers {
+	# 	trusted_proxies static 173.245.48.0/20 103.21.244.0/22 (… 목록 전체)
+	# 	client_ip_headers CF-Connecting-IP
+	# }
+}
+
+{$SHRINE_DOMAIN} {
+	encode gzip
+
+	# 요청 본문 크기 상한
+	#   /api/upload        등록소 이미지 원본 (앱 상한 10MiB) → 11MB
+	#   /api/admin/upload  운영자 화면 이미지 (JSON 안의 base64라 약 13.4MB) → 14MB
+	#   나머지             16KB
+	@upload path /api/upload
+	@adminUpload path /api/admin/upload
+	@other not path /api/upload /api/admin/upload
+	request_body @upload {
+		max_size 11MB
+	}
+	request_body @adminUpload {
+		max_size 14MB
+	}
+	request_body @other {
+		max_size 16KB
+	}
+
+	# 보안 헤더. CSP · X-Frame-Options · Referrer-Policy처럼 화면마다 다른 헤더는 앱(server/http.ts · admin.ts)이 붙입니다.
+	# 여기서는 앱 설정(NODE_ENV 등)과 상관없이 늘 있어야 하는 것만 응답 직전에 덮어씁니다.
+	header {
+		# HTTPS로만 접속 (1년). includeSubDomains · preload는 넣지 않습니다: 같은 도메인의 다른 서비스까지 묶이기 때문
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		-Server
+		defer
+	}
+
+	# (선택) 운영자 화면에 한 겹 더: 아래 IP가 아니면 /admin · /api/admin을 404로. 앱의 ADMIN_IPS와 같이 써도 됩니다.
+	# @adminOutside {
+	# 	path /admin /admin/* /api/admin /api/admin/*
+	# 	not client_ip 203.0.113.10
+	# }
+	# respond @adminOutside 404
+
+	reverse_proxy shrine:3300 {
+		# 배포로 앱이 잠깐 내려가 있으면 5초까지 다시 붙어 봅니다 (그동안 요청은 기다립니다)
+		lb_try_duration 5s
+		lb_try_interval 250ms
+		# Cloudflare 프록시를 쓸 때만 (위 trusted_proxies와 함께): 앱이 첫 값으로 실제 방문자 IP를 받게 합니다
+		# header_up X-Forwarded-For {client_ip}
+		transport http {
+			# 앱(Node)의 keep-alive(기본 5초)보다 짧게: 앱이 막 닫은 연결을 다시 써서 생기는 502를 막습니다
+			keepalive 4s
+		}
+	}
+
+	# 앱이 내려가 있을 때(배포 · 재시작 중) 빈 502 대신 "잠시 정비 중" 화면을 보여 주고 10초 뒤 다시 불러옵니다
+	handle_errors {
+		@down expression `{err.status_code} in [502, 503, 504]`
+		handle @down {
+			header {
+				Content-Type "text/html; charset=utf-8"
+				Cache-Control "no-store"
+				Retry-After "10"
+				Strict-Transport-Security "max-age=31536000"
+				X-Content-Type-Options "nosniff"
+				X-Robots-Tag "noindex"
+				-Server
+			}
+			respond `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="10"><title>잠시 정비 중 · 무사배포 기원소</title></head><body style="margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;box-sizing:border-box;background:#1d1b26;color:#f2e8d5;font:16px/1.7 system-ui,sans-serif;text-align:center"><main><h1 style="font-size:22px;margin:0 0 8px">잠시 정비 중입니다</h1><p style="margin:0">기원소를 손보고 있어요. 10초 뒤에 저절로 다시 열립니다.</p></main></body></html>` 503
+		}
+	}
+
+	# 접속 기록 (개인정보 처리방침: IP 일부 가림, 30일 넘게 두지 않음)
+	#   남는 것: 시각 · 가린 IP(IPv4 /24, IPv6 /32) · 메서드 · 주소 · 상태 코드 · 크기 · 걸린 시간.
+	#   요청 · 응답 헤더(쿠키 · User-Agent 등)는 지웁니다.
+	#   파일: caddy-logs 볼륨의 /var/log/caddy/access.log. 24시간마다 새 파일로 넘기고(그 뒤 첫 요청 때),
+	#   넘긴 파일은 27일이 지나면 지웁니다. 하루치 묶음과 정리 지연을 더해도 어떤 기록도 30일을 넘지 않습니다.
+	log {
+		output file /var/log/caddy/access.log {
+			roll_interval 24h
+			roll_keep_for 648h
+			roll_keep 40
+		}
+		format filter {
+			wrap json
+			fields {
+				request>remote_ip ip_mask {
+					ipv4 24
+					ipv6 32
+				}
+				request>client_ip ip_mask {
+					ipv4 24
+					ipv6 32
+				}
+				request>remote_port delete
+				request>headers delete
+				resp_headers delete
+			}
+		}
+	}
+}
+
+# www 주소도 받으려면 www.<도메인> DNS도 이 서버로 걸고 아래 주석을 풉니다.
+# DNS 없이 켜 두면 인증서 발급이 계속 실패하며 로그를 채웁니다.
+# www.{$SHRINE_DOMAIN} {
+# 	redir https://{$SHRINE_DOMAIN}{uri} permanent
+# }

@@ -1,0 +1,25 @@
+{
+  "name": "musabaepo-shrine",
+  "private": true,
+  "license": "SEE LICENSE IN LICENSE",
+  "description": "무사배포 기원소 — 개발자가 캐릭터로 걸어 다니며 서로의 프로젝트 사당에 초를 켜 주는 도트 공간 (독립 서비스)",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "node --watch --disable-warning=ExperimentalWarning server/main.ts",
+    "start": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning server/main.ts",
+    "check": "tsc -p .",
+    "backup": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning server/backup.ts",
+    "shrine": "node --disable-warning=ExperimentalWarning server/cli.ts"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.0",
+    "typescript": "^5.9.0"
+  }
+}

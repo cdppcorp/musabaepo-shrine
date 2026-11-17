@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <meta name="shrine-base" content="{{BASE}}">
+  <title>운영자 로그인 · 무사배포 기원소</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="{{BASE}}/style.css">
+  <link rel="stylesheet" href="{{BASE}}/admin/admin.css">
+  <script type="module" src="{{BASE}}/admin/login.js"></script>
+</head>
+<body class="adm adm-login">
+  <main class="login-box">
+    <p class="lab">ADMIN · 운영자 전용</p>
+    <h1>기원소 운영</h1>
+    <p class="login-lead">운영자 비밀번호로 들어갑니다. 여러 번 틀리면 15분 동안 잠깁니다.</p>
+    <!-- 스크립트가 못 뜨면 JSON이 아닌 요청이 되어 서버가 받지 않습니다 (비밀번호가 주소에 남지 않게 POST) -->
+    <form id="loginForm" class="form login-form" method="post" action="{{BASE}}/api/admin/login">
+      <input type="text" name="username" value="admin" autocomplete="username" hidden>
+      <label>비밀번호
+        <input id="password" name="password" type="password" autocomplete="current-password" required minlength="16" maxlength="256" autofocus>
+      </label>
+      <button id="loginBtn" class="btn btn-main" type="submit">들어가기</button>
+      <p id="loginMsg" class="msg" role="status" aria-live="polite"></p>
+    </form>
+    <a class="login-back" href="{{BASE}}/">← 기원소로 돌아가기</a>
+  </main>
+</body>
+</html>

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <meta name="shrine-base" content="{{BASE}}">
+  <title>운영 · 무사배포 기원소</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="{{BASE}}/style.css">
+  <link rel="stylesheet" href="{{BASE}}/admin/admin.css">
+  <script type="module" src="{{BASE}}/admin/app.js"></script>
+</head>
+<body class="adm">
+  <header class="adm-top">
+    <div class="adm-bar">
+      <p class="adm-brand"><span class="lab">ADMIN</span><strong>무사배포 기원소 운영</strong></p>
+      <div class="adm-tools">
+        <a class="btn btn-sm" href="{{BASE}}/" target="_blank" rel="noopener">맵 열기</a>
+        <button id="logoutBtn" class="btn btn-sm" type="button">로그아웃</button>
+      </div>
+    </div>
+    <nav class="adm-nav" id="nav" aria-label="운영 메뉴">
+      <a href="#dashboard" data-view="dashboard">대시보드</a>
+      <a href="#people" data-view="people">접속자 <span class="adm-count" id="navPeople" hidden></span></a>
+      <a href="#projects" data-view="projects">접수 <span class="adm-count" id="navProjects" hidden></span></a>
+      <a href="#shrines" data-view="shrines">사당</a>
+      <a href="#posts" data-view="posts">게시판 <span class="adm-count" id="navPosts" hidden></span></a>
+      <a href="#settings" data-view="settings">설정</a>
+      <a href="#log" data-view="log">기록</a>
+    </nav>
+  </header>
+  <main class="adm-main" id="main" tabindex="-1">
+    <noscript><p class="empty">운영 화면은 JavaScript가 필요합니다.</p></noscript>
+  </main>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

@@ -1,4 +1,4 @@
-/* AI 안경: 켜면 보이는 것마다 옆에 설명 카드가 붙습니다 (튜토리얼처럼).
+/* 네비게이터: 켜면 보이는 것마다 옆에 설명 카드가 붙습니다 (튜토리얼처럼).
  * 화면 단추(HUD) 설명을 먼저 놓고, 맵 위 장소 설명은 단추 · 다른 카드와 겹치지 않는 자리를 찾아 놓습니다.
  * 좌표는 모두 캔버스 CSS 픽셀입니다 (main.js의 textLayer 상태에서 부릅니다). */
 
@@ -49,7 +49,7 @@ export function drawLens(c, o) {
   c.restore()
 }
 
-/** 화면 가장자리에 옅은 청록빛: 안경을 쓰고 있다는 표시 */
+/** 화면 가장자리에 옅은 청록빛: 네비게이터가 켜져 있다는 표시 */
 function vignette(c, w, h) {
   const g = c.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.38, w / 2, h / 2, Math.max(w, h) * 0.75)
   g.addColorStop(0, 'rgba(94,230,255,0)')
@@ -167,7 +167,7 @@ function leader(c, [ax, ay], [x, y, w, h], t) {
   c.fill()
 }
 
-/** 카드: 짙은 유리판 + 청록 테두리 + 네 모서리 꺾쇠 (AR 안경 느낌) */
+/** 카드: 짙은 유리판 + 청록 테두리 + 네 모서리 꺾쇠 (네비게이터 AR 화면 느낌) */
 function card(c, { n, box, r }, o) {
   const [x, y, w, h] = r.map(Math.round)
   const s = box.s

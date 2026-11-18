@@ -137,6 +137,9 @@ a.card:hover { border-color: var(--ink-mute); }
   border: 1px solid rgb(255 255 255 / .2); background: #17233f; color: #f2f5fb; max-width: 60%;
 }
 .plot-select:focus { outline: none; border-color: var(--amber); }
+/* 채널 고르기 (채널마다 자리 20칸이 따로) */
+.rplot-chan { justify-content: flex-start; }
+.rplot-chan .plot-select { max-width: none; }
 
 /* 사당 폼 */
 .shrine-form { display: grid; gap: 14px; }

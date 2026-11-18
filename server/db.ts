@@ -180,6 +180,66 @@ const MIGRATIONS: Migration[] = [
       for (const col of ['consent_at', 'review_at', 'closed_at', 'purged_at']) addColumn('projects', col, 'INTEGER')
     },
   },
+  {
+    // 채널별 사당: 채널 1~3마다 자리 20칸이 따로 있고, 사당은 자기 채널에서만 보입니다 (world.ts CHANNELS).
+    //   shrines.channel: 예전 사당은 모두 1번 채널로. 자리는 (채널, 자리) 짝으로만 겹치지 않으면 됩니다.
+    //   예전 표는 plot 칸 자체에 UNIQUE가 붙어 있어(지울 수 없는 자동 색인) 표를 새로 만들어 옮깁니다.
+    //   옮길 때 이 목록에 없는 칸이 예전 표에 있으면 그 칸도 그대로 붙여 옮깁니다 (데이터를 버리지 않게).
+    //   projects.want_channel: 등록할 때 고른 채널 (NULL = 아무 채널). 자리를 골라 둔 예전 접수는 1번 채널로 봅니다.
+    v: 4,
+    name: '채널별 사당 자리',
+    up: () => {
+      db.exec(`
+        DROP TABLE IF EXISTS shrines_v4;
+        CREATE TABLE shrines_v4 (
+          slug              TEXT PRIMARY KEY,
+          name              TEXT NOT NULL,
+          tagline           TEXT NOT NULL,
+          category          TEXT NOT NULL,
+          domain            TEXT NOT NULL UNIQUE,
+          url               TEXT NOT NULL,
+          operator          TEXT NOT NULL,
+          keeper            INTEGER NOT NULL DEFAULT 0,
+          paid              INTEGER NOT NULL DEFAULT 0,
+          verified_domain   TEXT NOT NULL,
+          verified_business TEXT,
+          joined_at         TEXT NOT NULL,
+          status            TEXT NOT NULL CHECK (status IN ('live', 'check')),
+          prayer            TEXT NOT NULL,
+          charm             TEXT,
+          deco              TEXT NOT NULL DEFAULT '[]',
+          screens           TEXT NOT NULL DEFAULT '[]',
+          captured_at       TEXT NOT NULL,
+          channel           INTEGER NOT NULL DEFAULT 1,
+          plot              INTEGER NOT NULL,
+          repo              TEXT NOT NULL DEFAULT '',
+          email             TEXT NOT NULL DEFAULT '',
+          email_public      INTEGER NOT NULL DEFAULT 0,
+          project_id        INTEGER NOT NULL DEFAULT 0,
+          sign              TEXT NOT NULL DEFAULT '',
+          UNIQUE (channel, plot)
+        );
+      `)
+      type Col = { name: string; type: string }
+      const colsOf = (t: string) => db.prepare(`PRAGMA table_info(${t})`).all() as unknown as Col[]
+      const quote = (name: string) => `"${name.replaceAll('"', '""')}"`
+      const fresh = new Set(colsOf('shrines_v4').map(c => c.name))
+      const old = colsOf('shrines')
+      for (const c of old) {
+        if (!fresh.has(c.name)) db.exec(`ALTER TABLE shrines_v4 ADD COLUMN ${quote(c.name)} ${c.type || ''}`)
+      }
+      const names = old.map(c => quote(c.name)).join(', ')
+      // 예전 표에는 channel 칸이 없어서 모두 기본값(1번 채널)이 됩니다
+      db.exec(`INSERT INTO shrines_v4 (${names}) SELECT ${names} FROM shrines`)
+      const count = (t: string) => (db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n
+      const before = count('shrines')
+      const after = count('shrines_v4')
+      if (before !== after) throw new Error(`옮긴 사당 수가 맞지 않습니다 (${before} → ${after})`)
+      db.exec('DROP TABLE shrines; ALTER TABLE shrines_v4 RENAME TO shrines;')
+      addColumn('projects', 'want_channel', 'INTEGER')
+      db.exec('UPDATE projects SET want_channel = 1 WHERE want_plot IS NOT NULL AND want_channel IS NULL')
+    },
+  },
 ]
 
 /** 이 서버가 아는 마지막 DB 구조 번호 */

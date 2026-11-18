@@ -101,7 +101,7 @@ body.playing { overflow: hidden; }
 .hud-pill { margin: 0; padding: 7px 12px; font-size: 13px; color: var(--ink-sub); font-variant-numeric: tabular-nums; }
 .hud-btn { padding: 7px 12px; font-size: 13px; font-weight: 700; cursor: pointer; }
 .hud-btn:hover { border-color: rgb(255 255 255 / .28); }
-/* AI 안경: 켜면 청록빛 */
+/* 네비게이터 단추: 켜면 청록빛 */
 .hud-glasses { white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
 .hud-glasses::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: rgb(255 255 255 / .28); }
 .hud-glasses[aria-pressed="true"] {
@@ -121,6 +121,10 @@ body.playing { overflow: hidden; }
   width: max-content; max-width: calc(100vw - 24px);
 }
 .bar .btn-main { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 사당 앞: [사당 보기] [초 켜기] 두 단추를 한 묶음으로 */
+.main-acts { display: flex; gap: 6px; min-width: 0; flex: 0 1 auto; }
+.btn-lit { flex: 0 0 auto; white-space: nowrap; background: transparent; border-color: var(--amber); color: var(--amber); }
+.btn-lit:hover:not(:disabled) { background: rgb(255 255 255 / .06); }
 /* 아래 줄: [주 행동] | 채팅(문구 고르기 · 직접 쓰기) | 행동(절 · 손 흔들기 · 깡충 · 빙글) */
 .sec { display: flex; align-items: center; gap: 6px; padding-left: 10px; border-left: 1px solid rgb(255 255 255 / .12); }
 .sec-label { font-size: 11px; font-weight: 800; letter-spacing: .04em; color: var(--ink-mute); writing-mode: horizontal-tb; }
@@ -263,6 +267,10 @@ body.sheet-open .zoom { display: none; }
 .rf.bad .rf-err { display: block; }
 .rf.bad .rf-help { display: none; }
 .rplot { display: grid; gap: 8px; }
+/* 채널 고르기 (채널마다 자리 20칸이 따로) */
+.rplot-chans { display: flex; flex-wrap: wrap; gap: 6px; }
+.rplot-chans .chip { display: inline-flex; align-items: baseline; gap: 4px; padding: 6px 10px; }
+.rplot-chans .chip small { font-size: 11px; font-weight: 600; opacity: .75; }
 .rplot-map { position: relative; width: 100%; border-radius: 10px; overflow: hidden; border: 1px solid rgb(255 255 255 / .14); background: #0b1324; }
 .rplot-map canvas { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
 .rplot-map button {
@@ -367,7 +375,6 @@ body.sheet-open .zoom { display: none; }
 .sheet-body > * { min-width: 0; margin: 0; }
 .more { font-size: 13px; color: var(--ink-mute); }
 .more summary { cursor: pointer; }
-.more .shot { margin: 8px 0; }
 .front { position: relative; container-type: inline-size; line-height: 0; border-radius: 10px; overflow: hidden; background: #0a1526; }
 .front svg { display: block; width: 100%; height: auto; }
 .front-screen { position: absolute; left: 35%; top: 26.6667%; width: 30%; height: 23.3333%; image-rendering: pixelated; }
@@ -384,19 +391,31 @@ body.sheet-open .zoom { display: none; }
 }
 .badge.ok { color: var(--green); border-color: #24543a; }
 .badge.keeper { color: var(--amber-soft); border-color: #5e4321; }
+/* 사당이 서 있는 채널 (눈에 덜 띄게) */
+.badge.badge-chan { font-weight: 600; color: var(--ink-mute); background: none; }
 .meta { margin: 0; font-size: 13px; color: var(--ink-mute); }
 .prayers { display: flex; flex-wrap: wrap; gap: 6px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .status { min-height: 22px; margin: 10px 0 0; font-size: 14px; color: var(--ink-sub); }
 .warn { margin: 0; padding: 10px 12px; border-radius: 10px; background: #2a2214; color: #e0b052; font-size: 14px; }
-.shot { margin: 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); background: #fff; }
+/* 사당 창 서비스 화면 (한 줄 소개 위). 긴 화면은 위쪽부터 보이게 잘라, 창 높이 안에 초 켜기 단추까지 보이게 합니다.
+   높이가 낮은 PC 화면에서는 장식인 사당 정면 그림 대신 서비스 화면을 보여 줍니다 (휴대폰처럼) */
+.shot { margin: 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); background: var(--bg); }
 .shot-bar {
   display: flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px;
   background: #e6e9f0; color: #5a6274; font-family: var(--mono); font-size: 12px; line-height: 1;
 }
-.shot-bar i { width: 7px; height: 7px; border-radius: 50%; background: #c3c8d3; }
-.shot-bar span { margin-left: 6px; }
-.shot img { display: block; width: 100%; height: auto; }
+.shot-bar i { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #c3c8d3; }
+.shot-bar span { margin-left: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shot img {
+  display: block; width: 100%; height: auto; aspect-ratio: auto 16 / 9; max-height: clamp(120px, calc(100vh - 770px), 200px);
+  object-fit: cover; object-position: top; background: var(--bg);
+}
+.shot img.whole { object-fit: contain; object-position: center; }
+@media (min-width: 721px) and (max-height: 900px) {
+  .sheet .front:has(~ .shot) { display: none; }
+  .shot img { max-height: clamp(120px, calc(100vh - 520px), 200px); }
+}
 .note { margin: 0; font-size: 12px; line-height: 1.55; color: var(--ink-mute); }
 /* 배포운 쪽지: 상자에서 뽑은 종이를 펼친 모양 */
 .slip {
@@ -459,6 +478,7 @@ body.sheet-open .zoom { display: none; }
   /* 휴대폰: 아래 줄을 두 줄로. 윗줄 주 행동, 아랫줄 채팅 + 행동 버튼(누르면 행동 창) */
   .bar { flex-wrap: wrap; width: calc(100vw - 24px); gap: 8px; }
   .bar .btn-main { flex: 1 1 100%; }
+  .main-acts { flex: 1 1 100%; }
   .sec { padding-left: 0; border-left: 0; }
   .sec-chat { flex: 1 1 0; }
   .chat-form { flex: 1 1 0; }
@@ -471,6 +491,9 @@ body.sheet-open .zoom { display: none; }
   .zoom .hud-btn { padding: 5px 8px; font-size: 12px; }
   body.pop-open .zoom { display: none; }
   .sheet .front { display: none; }
+  /* 휴대폰: 창이 낮아(52vh) 서비스 화면도 낮게. 아래 단추는 창 안에서 넘겨 봅니다 */
+  .shot-bar { height: 22px; font-size: 11px; }
+  .shot img { max-height: min(132px, 18vh); }
 }
 
 @media (max-width: 400px) {

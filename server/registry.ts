@@ -1,5 +1,6 @@
 // 내 프로젝트 등록소: 누구나 GitHub 저장소나 서비스 주소로 프로젝트를 접수합니다. 사업자 확인은 받지 않습니다.
 //   접수 → 운영자 검토(관리자 페이지 또는 npm run shrine -- approve) → 맵의 빈 사당 자리에 올라갑니다.
+//   접수할 때 채널(1~3)과 그 채널의 자리를 고를 수 있습니다 (사당은 자기 채널에서만 보입니다). 고른 채널 · 자리는 want_channel · want_plot.
 //   맵에 오른 뒤 이름 · 소개 · 지붕 글자 · 링크 · 이미지를 바꾸면 운영자가 다시 볼 때까지 pending_* 칸에 두고, 사당은 그대로입니다.
 //   분류 · 이메일 · 이메일 공개 여부는 바로 반영합니다.
 //   이메일은 접수 때 꼭 받고(개인정보 수집 동의 consent 필수), 공개 여부는 작성자가 고릅니다 (공개를 고른 경우에만 사당 창에 보임).
@@ -13,12 +14,12 @@ import { cleanChat } from './chat.ts'
 import { db } from './db.ts'
 import { notify } from './notify.ts'
 import {
-  CATEGORY_KEYS, clearShrineCache, insertShrine, isValidEmail, normalizeServiceUrl, parseGithub,
-  validateShrine, type Shrine,
+  CATEGORY_KEYS, clearShrineCache, freePlotsIn, insertShrine, isValidEmail, normalizeServiceUrl, parseGithub,
+  plotTaken, validateShrine, type Shrine,
 } from './shrines.ts'
 import { kstDate } from './util.ts'
 import { grantUploadView, ownsUpload } from './uploads.ts'
-import { PLOTS } from './world.ts'
+import { CHANNELS, PLOTS, isChannel } from './world.ts'
 
 export const NAME_MAX = 20
 export const TAGLINE_MAX = 40
@@ -43,7 +44,7 @@ interface ProjectRow {
   id: number; code: string; at: number; name: string; tagline: string; category: string; sign: string
   github: string; url: string; email: string; email_public: number; pin_hash: string; nick: string
   status: ProjectStatus; note: string; slug: string; pending_github: string | null; pending_url: string | null
-  repo_ok: number; stars: number; screen: string; pending_screen: string | null; want_plot: number | null
+  repo_ok: number; stars: number; screen: string; pending_screen: string | null; want_plot: number | null; want_channel: number | null
   pending_name: string | null; pending_tagline: string | null; pending_sign: string | null
   consent_at: number | null; review_at: number | null; closed_at: number | null; purged_at: number | null
 }
@@ -53,6 +54,7 @@ interface ProjectRow {
    pending_name · pending_tagline · pending_sign: 맵에 오른 사당의 글자를 바꾸면 검토 전까지 여기에 (NULL = 바꾼 것 없음)
    consent_at: 개인정보 수집 동의 시각 · review_at: 지금 검토를 기다리기 시작한 시각 (90일 지나면 저절로 끝냄)
    closed_at: 반려되거나 내린 시각 (30일 뒤 파기) · purged_at: 개인정보를 파기한 시각
+   want_channel: 등록할 때 고른 채널 (NULL = 아무 채널, db.ts v4)
    pin_locks: 프로젝트별 그날 PIN 틀린 횟수와 24시간 잠금 */
 function ensureColumn(table: string, column: string, spec: string) {
   const has = () => (db.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]).some(c => c.name === column)
@@ -64,7 +66,7 @@ function ensureColumn(table: string, column: string, spec: string) {
   }
 }
 for (const col of ['pending_name', 'pending_tagline', 'pending_sign']) ensureColumn('projects', col, 'TEXT')
-for (const col of ['consent_at', 'review_at', 'closed_at', 'purged_at']) ensureColumn('projects', col, 'INTEGER')
+for (const col of ['consent_at', 'review_at', 'closed_at', 'purged_at', 'want_channel']) ensureColumn('projects', col, 'INTEGER')
 db.exec(`CREATE TABLE IF NOT EXISTS pin_locks (
   project_id INTEGER PRIMARY KEY,
   day        TEXT NOT NULL,
@@ -89,8 +91,12 @@ function view(r: ProjectRow) {
     pendingGithub: r.pending_github, pendingUrl: r.pending_url,
     pendingName: r.pending_name ?? null, pendingTagline: r.pending_tagline ?? null, pendingSign: r.pending_sign ?? null,
     note: r.note, screen: r.screen ?? '', pendingScreen: r.pending_screen ?? null, wantPlot: r.want_plot ?? null,
+    wantChannel: wishChannel(r),
   }
 }
+
+/** 작성자가 고른 채널 (NULL = 아무 채널). 자리만 골라 둔 예전 접수는 1번 채널로 봅니다 */
+const wishChannel = (r: ProjectRow): number | null => r.want_channel ?? (r.want_plot != null ? 1 : null)
 
 /**
  * 작성자에게 돌려주는 모양. 고칠 칸(이름 · 소개 · 지붕 글자 · 링크)에는 검토를 기다리는 값이 있으면 그 값을 넣습니다.
@@ -358,7 +364,7 @@ export async function submitProject(body: Record<string, unknown>, who: Who): Pr
   if (body.consent !== true) return fail(400, 'consent')
   const screen = body.screen == null || body.screen === '' ? '' : ownsUpload(body.screen, who.sid) ? body.screen : null
   if (screen == null) return fail(400, 'image')
-  const want = readWantPlot(body.plot)
+  const want = readWant(body.plot, body.channel)
   if (!want.ok) return want
   if (isDuplicate(links.links, 0)) return fail(409, 'dup')
 
@@ -375,10 +381,10 @@ export async function submitProject(body: Record<string, unknown>, who: Who): Pr
 
   const code = randomBytes(12).toString('base64url')
   const r = db.prepare(`INSERT INTO projects (code, at, name, tagline, sign, category, github, url, email, email_public, pin_hash, nick,
-                          repo_ok, stars, screen, want_plot, consent_at, review_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                          repo_ok, stars, screen, want_plot, want_channel, consent_at, review_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(code, now, name.text, tagline.text, sign.text, body.category, links.links.github, links.links.url, email,
-      body.emailPublic === true ? 1 : 0, hashPin(pin), who.nick.slice(0, 20), repoOk, stars, screen, want.plot, now, now)
+      body.emailPublic === true ? 1 : 0, hashPin(pin), who.nick.slice(0, 20), repoOk, stars, screen, want.plot, want.channel, now, now)
   lastSubmitBySid.set(who.sid, now)
   submitsByIp.set(who.ipKey, { day, n: used && used.day === day ? used.n + 1 : 1 })
   const id = Number(r.lastInsertRowid)
@@ -450,10 +456,12 @@ export async function manageSave(body: Record<string, unknown>, ipKey: string, s
     if (typeof body.category !== 'string' || !CATEGORY_KEYS.includes(body.category)) return fail(400, 'category')
     next.category = body.category
   }
-  if ('plot' in body && !live) {
-    const v = readWantPlot(body.plot)
+  // 채널 · 자리는 맵에 오르기 전에만. 한쪽만 보내면 다른 쪽은 지금 값으로 봅니다
+  if (('plot' in body || 'channel' in body) && !live) {
+    const v = readWant('plot' in body ? body.plot : row.want_plot, 'channel' in body ? body.channel : wishChannel(row))
     if (!v.ok) return v
     next.want_plot = v.plot
+    next.want_channel = v.channel
   }
   if ('email' in body) {
     const e = cleanEmail(body.email)
@@ -532,12 +540,12 @@ export async function manageSave(body: Record<string, unknown>, ipKey: string, s
 
   db.prepare(`UPDATE projects SET name = ?, tagline = ?, sign = ?, category = ?, email = ?, email_public = ?, pin_hash = ?,
                 github = ?, url = ?, pending_github = ?, pending_url = ?, note = ?, status = ?, repo_ok = ?, stars = ?,
-                screen = ?, pending_screen = ?, want_plot = ?, pending_name = ?, pending_tagline = ?, pending_sign = ?,
+                screen = ?, pending_screen = ?, want_plot = ?, want_channel = ?, pending_name = ?, pending_tagline = ?, pending_sign = ?,
                 review_at = ?, closed_at = ?
               WHERE id = ?`)
     .run(next.name, next.tagline, next.sign ?? '', next.category, next.email, next.email_public, next.pin_hash, next.github, next.url,
       next.pending_github, next.pending_url, next.note, next.status, next.repo_ok, next.stars,
-      next.screen ?? '', next.pending_screen ?? null, next.want_plot ?? null, next.pending_name ?? null, next.pending_tagline ?? null,
+      next.screen ?? '', next.pending_screen ?? null, next.want_plot ?? null, next.want_channel ?? null, next.pending_name ?? null, next.pending_tagline ?? null,
       next.pending_sign ?? null, next.review_at ?? null, next.closed_at ?? null, row.id)
   if (live) {
     // 분류 · 이메일 · 공개 여부는 맵의 사당에도 바로. 이름 · 소개 · 지붕 글자는 검토 뒤에
@@ -599,13 +607,24 @@ function applyPendingText(row: ProjectRow): string {
   return name
 }
 
-/** 고른 자리: 없으면 null(아무 데나). 없는 자리 · 이미 사당이 있는 자리는 'plot' */
-function readWantPlot(raw: unknown): { ok: true; plot: number | null } | Fail {
-  if (raw == null || raw === '') return { ok: true, plot: null }
-  const n = Number(raw)
+/**
+ * 고른 채널 · 자리. 채널이 없으면 null(아무 채널), 자리가 없으면 null(그 채널의 빈 자리 아무 데나).
+ * 자리만 보내면(채널을 모르는 예전 화면) 1번 채널로 봅니다. 자리는 그 채널 안에서만 비어 있으면 됩니다.
+ * 없는 채널은 'channel', 없는 자리 · 그 채널에 이미 사당이 있는 자리는 'plot'
+ */
+function readWant(plotRaw: unknown, channelRaw: unknown): { ok: true; plot: number | null; channel: number | null } | Fail {
+  let channel: number | null = null
+  if (channelRaw != null && channelRaw !== '') {
+    const c = typeof channelRaw === 'number' ? channelRaw : typeof channelRaw === 'string' && /^\d{1,2}$/.test(channelRaw) ? Number(channelRaw) : NaN
+    if (!isChannel(c)) return fail(400, 'channel')
+    channel = c
+  }
+  if (plotRaw == null || plotRaw === '') return { ok: true, plot: null, channel }
+  const n = Number(plotRaw)
   if (!Number.isInteger(n) || !PLOTS[n]) return fail(400, 'plot')
-  if (db.prepare('SELECT 1 FROM shrines WHERE plot = ?').get(n)) return fail(409, 'plot')
-  return { ok: true, plot: n }
+  const ch = channel ?? 1
+  if (plotTaken(ch, n)) return fail(409, 'plot')
+  return { ok: true, plot: n, channel: ch }
 }
 
 export function slugify(text: string): string {
@@ -625,14 +644,33 @@ export function uniqueSlug(base: string): string {
   return `${base.slice(0, 30)}-${randomBytes(3).toString('hex')}`
 }
 
-function freePlot(): number | null {
-  const used = new Set((db.prepare('SELECT plot FROM shrines').all() as unknown as { plot: number }[]).map(r => r.plot))
-  for (const p of PLOTS) if (!used.has(p.id)) return p.id
+const ALL_CHANNELS = Array.from({ length: CHANNELS }, (_, i) => i + 1)
+
+/**
+ * 자리를 정하지 않고 승인할 때 세울 곳.
+ *   · 작성자가 고른 채널 · 자리가 비어 있으면 그곳 (운영자가 채널을 정했으면 그 채널이 작성자가 고른 채널일 때만)
+ *   · 아니면 그 채널(운영자가 정한 채널 → 작성자가 고른 채널)의 첫 빈 자리
+ *   · 운영자가 채널을 정하지 않았고 그 채널이 꽉 찼거나 아무 채널이면 1번 채널부터 첫 빈 자리
+ */
+function autoPlace(row: ProjectRow, channelArg?: number): { channel: number; plot: number } | null {
+  const wish = wishChannel(row)
+  const first = channelArg ?? wish
+  if (first != null && first === wish && row.want_plot != null && PLOTS[row.want_plot] && !plotTaken(first, row.want_plot)) {
+    return { channel: first, plot: row.want_plot }
+  }
+  const order = first == null ? ALL_CHANNELS : channelArg != null ? [first] : [first, ...ALL_CHANNELS.filter(c => c !== first)]
+  for (const channel of order) {
+    const plot = freePlotsIn(channel)[0]
+    if (plot != null) return { channel, plot }
+  }
   return null
 }
 
-/** 승인: 검토 중이면 빈 자리에 사당을 세우고, 맵에 있는 사당의 변경(글자 · 이미지 · 링크)이면 사당에 반영합니다 */
-export function approveProject(id: number, plotArg?: number): string {
+/**
+ * 승인: 검토 중이면 빈 자리에 사당을 세우고, 맵에 있는 사당의 변경(글자 · 이미지 · 링크)이면 사당에 반영합니다.
+ * plotArg · channelArg: 운영자가 정한 자리 · 채널. 자리만 정하면 채널은 작성자가 고른 채널(없으면 1번)입니다.
+ */
+export function approveProject(id: number, plotArg?: number, channelArg?: number): string {
   const row = getRow(id)
   if (!row) throw new Error(`없는 접수입니다: ${id}`)
 
@@ -659,17 +697,19 @@ export function approveProject(id: number, plotArg?: number): string {
   }
   if (row.status !== 'pending') throw new Error(`검토 대기 상태가 아닙니다 (${row.status}): ${id}`)
 
+  if (channelArg != null && !isChannel(channelArg)) throw new Error(`없는 채널입니다: ${channelArg} (1~${CHANNELS})`)
+  let channel: number
   let plot: number
   if (plotArg != null) {
+    channel = channelArg ?? wishChannel(row) ?? 1
     if (!PLOTS[plotArg]) throw new Error(`없는 자리 번호입니다: ${plotArg} (0~${PLOTS.length - 1})`)
-    if (db.prepare('SELECT 1 FROM shrines WHERE plot = ?').get(plotArg)) throw new Error(`이미 사당이 있는 자리입니다: ${plotArg}`)
+    if (plotTaken(channel, plotArg)) throw new Error(`이미 사당이 있는 자리입니다: 채널 ${channel} · ${plotArg}번`)
     plot = plotArg
   } else {
-    const wanted = row.want_plot != null && PLOTS[row.want_plot] && !db.prepare('SELECT 1 FROM shrines WHERE plot = ?').get(row.want_plot)
-      ? row.want_plot : null
-    const p = wanted ?? freePlot()
-    if (p == null) throw new Error('빈 사당 자리가 없습니다')
-    plot = p
+    const spot = autoPlace(row, channelArg)
+    if (!spot) throw new Error(channelArg != null ? `채널 ${channelArg}에는 빈 사당 자리가 없습니다` : '빈 사당 자리가 없습니다')
+    channel = spot.channel
+    plot = spot.plot
   }
   const links = { github: row.github, url: row.url }
   const repoName = parseGithub(row.github)?.repo ?? ''
@@ -679,7 +719,7 @@ export function approveProject(id: number, plotArg?: number): string {
     slug, name: row.name, tagline: row.tagline, category: row.category, domain: domainOf(links),
     url: links.url || links.github, operator: row.nick.slice(0, 20) || '익명', keeper: false, paid: false,
     verifiedDomain: '', verifiedBusiness: null, joinedAt: today, status: 'live', prayer: 'deploy', charm: null,
-    deco: [], screens: row.screen ? [`up/${row.screen}`] : [], capturedAt: today, plot, repo: links.github, email: row.email,
+    deco: [], screens: row.screen ? [`up/${row.screen}`] : [], capturedAt: today, channel, plot, repo: links.github, email: row.email,
     emailPublic: row.email_public === 1, projectId: row.id, sign: row.sign ?? '',
   }
   const errors = validateShrine(shrine)
@@ -687,7 +727,7 @@ export function approveProject(id: number, plotArg?: number): string {
   insertShrine(shrine)
   db.prepare(`UPDATE projects SET status = 'approved', slug = ?, note = '', review_at = NULL, closed_at = NULL WHERE id = ?`).run(slug, id)
   clearShrineCache()
-  return `승인했습니다: ${row.name} → 사당 '${slug}' (자리 ${plot})`
+  return `승인했습니다: ${row.name} → 사당 '${slug}' (채널 ${channel} · 자리 ${plot})`
 }
 
 /** 반려: 검토 중이면 접수 반려(30일 뒤 개인정보 파기), 맵에 있는 사당의 변경 검토면 바꾸려던 것만 버립니다 (사당은 그대로) */
@@ -741,7 +781,7 @@ export function purgeProject(id: number, now = Date.now()): string[] | null {
   if (!row) return null
   db.prepare(`UPDATE projects SET name = '(파기됨)', tagline = '', sign = '', github = '', url = '', email = '', email_public = 0,
                 pin_hash = '', slug = '', screen = '', pending_screen = NULL, pending_github = NULL, pending_url = NULL,
-                pending_name = NULL, pending_tagline = NULL, pending_sign = NULL, want_plot = NULL, review_at = NULL,
+                pending_name = NULL, pending_tagline = NULL, pending_sign = NULL, want_plot = NULL, want_channel = NULL, review_at = NULL,
                 closed_at = COALESCE(closed_at, ?), purged_at = ?
               WHERE id = ?`).run(now, now, id)
   db.prepare('DELETE FROM pin_locks WHERE project_id = ?').run(id)

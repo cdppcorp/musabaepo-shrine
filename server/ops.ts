@@ -3,12 +3,12 @@
 // 실패하면 OpError(화면에 그대로 보여 줄 한국어 문장 + HTTP 상태)를 던집니다.
 import { db } from './db.ts'
 import {
-  CATEGORY_KEYS, clearShrineCache, fromRow, insertShrine, isPrayerKey, isValidEmail, parseGithub, validateShrine,
-  type Shrine, type ShrineRow,
+  CATEGORY_KEYS, clearShrineCache, freePlotsIn, fromRow, insertShrine, isPrayerKey, isValidEmail, parseGithub, plotTaken,
+  validateShrine, type Shrine, type ShrineRow,
 } from './shrines.ts'
 import { NAME_MAX, TAGLINE_MAX, domainOf, readLinks, slugify, uniqueSlug, type Links } from './registry.ts'
 import { kstDate } from './util.ts'
-import { PLOTS } from './world.ts'
+import { CHANNELS, PLOTS, isChannel } from './world.ts'
 
 export class OpError extends Error {
   status: number
@@ -63,19 +63,34 @@ function linksOf(s: Shrine): Links {
   return { github: s.repo, url: s.domain.startsWith('github.com/') ? '' : s.url }
 }
 
-/** 자리 번호 읽기: 있는 자리이고 비어 있어야 합니다 */
-function readFreePlot(raw: unknown): number {
-  const n = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\d{1,3}$/.test(raw) ? Number(raw) : NaN
-  if (!Number.isInteger(n) || !PLOTS[n]) throw new OpError(`없는 자리 번호입니다 (0~${PLOTS.length - 1})`)
-  if (db.prepare('SELECT 1 FROM shrines WHERE plot = ?').get(n)) throw new OpError(`이미 사당이 있는 자리입니다: ${n}번`, 409)
+/** 채널 번호 읽기 (1~3). 비어 있으면 fallback */
+function readChannel(raw: unknown, fallback: number | null): number | null {
+  if (raw == null || raw === '') return fallback
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\d{1,2}$/.test(raw) ? Number(raw) : NaN
+  if (!isChannel(n)) throw new OpError(`없는 채널입니다 (1~${CHANNELS})`)
   return n
 }
 
-/** 빈 자리 번호들 (작은 번호부터) */
-export function freePlotIds(): number[] {
-  const used = new Set((db.prepare('SELECT plot FROM shrines').all() as unknown as { plot: number }[]).map(r => r.plot))
-  return PLOTS.map(p => p.id).filter(id => !used.has(id))
+/** 자리 번호 읽기: 있는 자리이고 그 채널에서 비어 있어야 합니다 (채널마다 자리 20칸이 따로 있음) */
+function readFreePlot(raw: unknown, channel: number): number {
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\d{1,3}$/.test(raw) ? Number(raw) : NaN
+  if (!Number.isInteger(n) || !PLOTS[n]) throw new OpError(`없는 자리 번호입니다 (0~${PLOTS.length - 1})`)
+  if (plotTaken(channel, n)) throw new OpError(`이미 사당이 있는 자리입니다: 채널 ${channel} · ${n}번`, 409)
+  return n
 }
+
+/** 첫 빈 자리: 채널을 정했으면 그 채널에서, 아니면 1번 채널부터 */
+function firstFreeSpot(channel: number | null): { channel: number; plot: number } | null {
+  const order = channel != null ? [channel] : Array.from({ length: CHANNELS }, (_, i) => i + 1)
+  for (const ch of order) {
+    const plot = freePlotsIn(ch)[0]
+    if (plot != null) return { channel: ch, plot }
+  }
+  return null
+}
+
+/** 채널 · 자리를 '채널 2 · 5번'처럼 */
+export const spotName = (channel: number, plot: number) => `채널 ${channel} · ${plot}번`
 
 /** 같은 주소를 쓰는 다른 사당이 있으면 막습니다 */
 function ensureDomainFree(domain: string, exceptSlug: string) {
@@ -122,7 +137,7 @@ function tx<T>(fn: () => T): T {
 
 /** 사당 전부 (규칙에 어긋나 맵에서 빠진 사당도 이유와 함께) */
 export function shrinesForAdmin() {
-  const rows = db.prepare('SELECT * FROM shrines ORDER BY plot').all() as unknown as ShrineRow[]
+  const rows = db.prepare('SELECT * FROM shrines ORDER BY channel, plot').all() as unknown as ShrineRow[]
   return rows.map(r => {
     const s = fromRow(r)
     return { ...s, errors: validateShrine(s) }
@@ -134,6 +149,7 @@ export function shrinesForAdmin() {
 /**
  * 운영자가 사당을 직접 넣습니다. 도메인(저장소) 확인 날짜는 오늘로 남습니다.
  * screens는 호출하는 쪽이 확인한 이미지 이름('up/<이름>')입니다 (직접 넣는 사당은 1~3장).
+ * channel · plot: 비우면 자동. 자리만 정하면 1번 채널, 채널만 정하면 그 채널의 첫 빈 자리, 둘 다 비우면 1번 채널부터 첫 빈 자리.
  */
 export function addShrine(body: Record<string, unknown>, screens: string[]): Shrine {
   const name = cleanOpText(body.name, NAME_MAX, '이름')
@@ -146,12 +162,18 @@ export function addShrine(body: Record<string, unknown>, screens: string[]): Shr
   const operator = cleanOpText(body.operator, OPERATOR_MAX, '운영 표시명', true) || '익명'
   const prayer = body.prayer == null || body.prayer === '' ? 'deploy' : body.prayer
   if (!isPrayerKey(prayer)) throw new OpError('현판 기원을 골라 주세요')
+  const wantChannel = readChannel(body.channel, null)
+  let channel: number
   let plot: number
   if (body.plot == null || body.plot === '') {
-    const free = freePlotIds()[0]
-    if (free == null) throw new OpError('빈 사당 자리가 없습니다', 409)
-    plot = free
-  } else plot = readFreePlot(body.plot)
+    const free = firstFreeSpot(wantChannel)
+    if (!free) throw new OpError(wantChannel != null ? `채널 ${wantChannel}에는 빈 사당 자리가 없습니다` : '빈 사당 자리가 없습니다', 409)
+    channel = free.channel
+    plot = free.plot
+  } else {
+    channel = wantChannel ?? 1
+    plot = readFreePlot(body.plot, channel)
+  }
   const status = readStatus(body.status ?? 'live')
   const email = readEmail(body.email)
   let slug: string
@@ -166,7 +188,7 @@ export function addShrine(body: Record<string, unknown>, screens: string[]): Shr
   const s: Shrine = {
     slug, name, tagline, category, domain, url: links.url || links.github, operator, keeper: body.keeper === true,
     paid: false, verifiedDomain: today, verifiedBusiness: null, joinedAt: today, status, prayer, charm: null, deco: [],
-    screens, capturedAt: today, plot, repo: links.github, email, emailPublic: email ? body.emailPublic === true : false,
+    screens, capturedAt: today, channel, plot, repo: links.github, email, emailPublic: email ? body.emailPublic === true : false,
     projectId: 0, sign,
   }
   rulesOrThrow(s)
@@ -232,13 +254,21 @@ export function setShrineStatus(slug: unknown, status: unknown): Shrine {
   return { ...cur, status: st }
 }
 
-/** 다른 빈 자리로 옮기기 */
-export function moveShrine(slug: unknown, plotRaw: unknown): { shrine: Shrine; from: number } {
+/** 다른 빈 자리로 옮기기. 채널을 비우면 지금 채널 안에서, 정하면 그 채널의 빈 자리로 (사당은 그 채널에서만 보이게 됩니다) */
+export function moveShrine(slug: unknown, plotRaw: unknown, channelRaw?: unknown): { shrine: Shrine; from: number; fromChannel: number } {
   const cur = getShrine(slug)
-  const plot = readFreePlot(plotRaw)
-  db.prepare('UPDATE shrines SET plot = ? WHERE slug = ?').run(plot, cur.slug)
+  const channel = readChannel(channelRaw, cur.channel) ?? cur.channel
+  const plot = readFreePlot(plotRaw, channel)
+  db.prepare('UPDATE shrines SET channel = ?, plot = ? WHERE slug = ?').run(channel, plot, cur.slug)
   clearShrineCache()
-  return { shrine: { ...cur, plot }, from: cur.plot }
+  return { shrine: { ...cur, channel, plot }, from: cur.plot, fromChannel: cur.channel }
+}
+
+/** 옮긴 기록 · 안내 글: 같은 채널이면 '0 → 12', 채널이 바뀌면 '채널 1 · 0번 → 채널 2 · 12번' */
+export function moveText(r: { shrine: Shrine; from: number; fromChannel: number }): string {
+  return r.fromChannel === r.shrine.channel
+    ? `${r.from} → ${r.shrine.plot}`
+    : `${spotName(r.fromChannel, r.from)} → ${spotName(r.shrine.channel, r.shrine.plot)}`
 }
 
 /**

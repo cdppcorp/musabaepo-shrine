@@ -57,6 +57,7 @@ const LIGHT_FAIL = {
   far: '사당에서 조금 멀어요. 앞으로 가서 다시 눌러 주세요.',
   closed: '점검중인 사당이라 지금은 초를 켤 수 없습니다.',
   prayer: '기원을 다시 골라 주세요.',
+  channel: '이 채널에는 없는 사당이에요. 사당은 자기 채널에서만 보여요.',
   error: '잠시 문제가 생겼어요. 다시 해 주세요.',
 }
 /** 이용이 막힌 사람에게 (입장 · 연결 모두) */
@@ -76,13 +77,14 @@ const dotDate = d => d.replaceAll('-', '.')
 const prayerLabel = k => PRAYERS.find(p => p.key === k)?.label ?? ''
 
 const st = {
-  world: null, shrines: [], bySlug: new Map(), byPlot: new Map(), images: new Map(), minis: new Map(),
+  // allShrines: 서버가 준 사당 전부 (채널 1~3). shrines · bySlug · byPlot: 지금 채널의 사당만 (showChannelShrines)
+  world: null, allShrines: [], shrines: [], bySlug: new Map(), byPlot: new Map(), images: new Map(), minis: new Map(),
   candles: { week: {}, today: 0 },
   look: [...DEFAULT_LOOK], token: '', nick: '',
   me: null, myId: '', channel: 0, max: 30, others: new Map(),
   ws: null, hello: false, retries: 0, retryMax: 5, running: false,
   keys: new Set(), path: [], arrive: false, cam: { x: 0, y: 0 }, last: 0,
-  // AI 안경: 켜면 보이는 것마다 옆에 설명 (lens는 화면 단추 자리를 잰 것)
+  // 네비게이터: 켜면 보이는 것마다 옆에 설명 (lens는 화면 단추 자리를 잰 것). 이름 glasses는 저장 값과 맞추려고 그대로 둡니다
   glasses: false, lens: null, lensAt: 0,
   // 화면 확대 단계 (마우스 휠 · +/- 키). 0이 기본, 한 단계마다 배율 k가 2씩 바뀝니다
   zoom: loadZoom(),
@@ -146,7 +148,29 @@ function showFootContact() {
   box.hidden = false
 }
 
+/**
+ * 지금 채널에서 보이는 사당의 채널: 1~3번은 그대로, 그 밖(정원이 차서 생기는 넘침 채널)과 연결 전에는 1번 채널.
+ * 서버 world.ts의 shrineChannelOf와 같은 규칙입니다.
+ */
+function shrineChannel(ch = st.channel) {
+  const n = st.world?.channels ?? 3
+  return Number.isInteger(ch) && ch >= 1 && ch <= n ? ch : 1
+}
+
+/** 그 채널(1~3)에 서 있는 사당 */
+const shrinesIn = ch => st.allShrines.filter(s => (s.channel ?? 1) === ch)
+
 function setShrines(list) {
+  st.allShrines = list
+  showChannelShrines()
+}
+
+/**
+ * 사당은 자기 채널에서만 보입니다. 맵 · 목록 · 미니맵 · 창 · 초 켜기가 지금 채널의 사당만 쓰도록 거릅니다 (채널을 옮길 때마다 다시).
+ * 이미지는 지금 채널 사당 것만 불러오고, 한 번 불러온 것은 채널을 오가도 그대로 둡니다.
+ */
+function showChannelShrines() {
+  const list = shrinesIn(shrineChannel())
   st.shrines = list
   st.bySlug = new Map(list.map(s => [s.slug, s]))
   st.byPlot = new Map(list.map(s => [s.plot, s]))
@@ -158,6 +182,12 @@ function setShrines(list) {
     img.src = `${BASE}/img/shrines/${s.screens[0]}`
     st.images.set(s.slug, img)
   }
+  // 다른 채널 사당의 창, 이 채널에서는 사당이 서 있는 빈 자리 창은 닫습니다
+  const plotSheet = /^p(\d+)$/.exec(st.sheetKey)
+  if (plotSheet && (st.sheetSlug ? !st.bySlug.has(st.sheetSlug) : st.byPlot.has(Number(plotSheet[1])))) closeSheet()
+  // 가까운 것(사당 ↔ 빈 자리)을 다음 화면에서 다시 봅니다
+  st.nearKey = ''
+  if (st.me && !$('#game').hidden) renderList()
 }
 
 /* ══════════ 입장 화면: 캐릭터 꾸미기 ══════════ */
@@ -667,6 +697,8 @@ function onServer(m) {
       if (typeof m.chat?.free === 'boolean') setFreeChat(m.chat.free)
       st.myId = m.id
       st.channel = m.channel
+      // 채널을 옮겼거나 서버가 다른 채널에 넣었으면 그 채널의 사당만 보이게
+      showChannelShrines()
       st.max = m.max
       st.me.x = m.me.x
       st.me.y = m.me.y
@@ -961,6 +993,10 @@ function bindInput() {
   })
 
   $('#actBtn').addEventListener('click', act)
+  $('#litBtn').addEventListener('click', () => {
+    const s = st.near?.kind === 'plot' ? st.near.shrine : null
+    if (s) lightCandle(s)
+  })
 }
 
 /* ══════════ 행동 ══════════ */
@@ -1024,7 +1060,19 @@ function actionLabel(n) {
   if (n.kind === 'seat') return '앉기'
   if (n.kind === 'seated') return '일어나기'
   if (!n.shrine) return '빈 자리 보기'
-  return litWait(n.shrine.slug) ? `${n.shrine.name} 사당 보기 · ${litAgainText(n.shrine.slug)}` : `${n.shrine.name} 사당 보기 · 초 켜기`
+  return `${n.shrine.name} 사당 보기`
+}
+
+/** 사당 앞에서만 보이는 [초 켜기]: 창을 열지 않고 바로 켭니다 (기원은 사당 창에서 마지막으로 고른 것) */
+function syncLitBtn() {
+  const b = $('#litBtn')
+  const s = st.near?.kind === 'plot' ? st.near.shrine : null
+  b.hidden = !s
+  if (!s) return
+  const wait = litWait(s.slug)
+  b.disabled = Boolean(wait)
+  b.textContent = wait ? `${litMinutes(s.slug)}분 뒤 다시` : '초 켜기'
+  b.title = wait ? litAgainText(s.slug) : `${s.name}에 ${prayerLabel(st.prayer)} 초 켜기 (기원은 사당 창에서 바꿀 수 있어요)`
 }
 
 function act() {
@@ -1261,6 +1309,7 @@ function rememberLit(slug, waitSec) {
 
 function refreshLit() {
   if (st.near?.kind === 'plot' && st.near.shrine) $('#actBtn').textContent = actionLabel(st.near)
+  syncLitBtn()
   if (st.sheetSlug) updateSheetCount()
 }
 
@@ -1349,11 +1398,15 @@ function openShrine(s) {
   }
   if (s.status === 'live' && img) img.complete && img.naturalWidth ? paint() : img.addEventListener('load', paint, { once: true })
   front.append(screen, el('span', 'front-banner', prayerLabel(s.prayer)))
-  body.append(front, el('p', 'tagline', s.tagline))
+  body.append(front)
+  // 등록한 서비스 화면은 한 줄 소개 바로 위에 펼쳐 둡니다 (화면이 없는 사당은 그대로)
+  if (s.screens?.[0]) body.append(shrineShot(s))
+  body.append(el('p', 'tagline', s.tagline))
 
   const badges = el('div', 'badges')
   badges.append(el('span', 'badge', CATEGORIES[s.category] ?? '기타'))
   if (s.repo || isRepoOnly(s)) badges.append(el('span', 'badge', 'GitHub'))
+  badges.append(el('span', 'badge badge-chan', `채널 ${s.channel ?? 1}`))
   const meta = el('p', 'meta')
   meta.id = 'sheetMeta'
   body.append(badges, meta)
@@ -1404,20 +1457,9 @@ function openShrine(s) {
     body.append(prayers, actions)
   }
 
-  // 실제 화면과 안내는 접어 둡니다
+  // 안내는 접어 둡니다
   const more = el('details', 'more')
-  more.append(el('summary', null, s.screens?.[0] ? '실제 화면 · 안내' : '안내'))
-  if (s.screens?.[0]) {
-    const shot = el('figure', 'shot')
-    const bar = el('div', 'shot-bar')
-    bar.append(el('i'), el('i'), el('i'), el('span', null, s.domain))
-    const full = document.createElement('img')
-    full.src = `${BASE}/img/shrines/${s.screens[0]}`
-    full.alt = `${s.name} 실제 화면`
-    full.loading = 'lazy'
-    shot.append(bar, full)
-    more.append(shot)
-  }
+  more.append(el('summary', null, '안내'))
   more.append(el('p', 'note',
     (s.joinedAt ? `입점 ${dotDate(s.joinedAt)}. ` : '')
     + (s.screens?.[0] && s.capturedAt ? `실제 화면은 ${dotDate(s.capturedAt)}에 찍었습니다. ` : '')
@@ -1428,6 +1470,24 @@ function openShrine(s) {
   openSheet(s.name, body, `p${s.plot}`)
   st.sheetSlug = s.slug
   updateSheetCount()
+}
+
+/** 사당 창의 서비스 화면: 작은 브라우저 틀(도메인) 안에 첫 장. 불러오지 못하면 틀째 빼서 깨진 그림이 남지 않게 합니다 */
+function shrineShot(s) {
+  const shot = el('figure', 'shot')
+  const bar = el('div', 'shot-bar')
+  bar.setAttribute('aria-hidden', 'true')
+  bar.append(el('i'), el('i'), el('i'), el('span', null, s.domain))
+  const img = document.createElement('img')
+  img.alt = `${s.name} 실제 화면`
+  img.loading = 'lazy'
+  img.decoding = 'async'
+  img.addEventListener('error', () => shot.remove(), { once: true })
+  // 정사각 · 세로 이미지(대표 이미지 · 휴대폰 화면)는 자르지 않고 통째로 보여 줍니다
+  img.addEventListener('load', () => img.classList.toggle('whole', img.naturalWidth < img.naturalHeight * 1.3), { once: true })
+  img.src = `${BASE}/img/shrines/${s.screens[0]}`
+  shot.append(bar, img)
+  return shot
 }
 
 function updateSheetCount() {
@@ -1471,6 +1531,7 @@ function onLit(m) {
     toast(m.reason === 'already' ? why(litMinutes(m.s)) : why ?? '초를 켜지 못했습니다.')
   }
   if (st.near) $('#actBtn').textContent = actionLabel(st.near)
+  syncLitBtn()
   updateSheetCount()
 }
 
@@ -1488,21 +1549,16 @@ function openEmpty(plot) {
 const FORTUNE_SHAKE = 0.9
 const FORTUNE_POP = 0.35
 
-function fortuneOfToday() {
-  let seed = ''
-  try {
-    seed = localStorage.getItem('shrine-seed') || ''
-    if (!seed) {
-      seed = Math.random().toString(36).slice(2)
-      localStorage.setItem('shrine-seed', seed)
-    }
-  } catch {
-    seed = 'guest'
-  }
-  let h = 2166136261
-  for (const ch of `${kstToday()}|${seed}`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619)
-  return FORTUNES[(h >>> 0) % FORTUNES.length]
+/** 뽑을 때마다 새로 고릅니다. 바로 앞에 나온 쪽지는 한 번 피합니다 */
+let lastFortune = -1
+function pickFortune() {
+  let i = Math.floor(Math.random() * FORTUNES.length)
+  if (i === lastFortune && FORTUNES.length > 1) i = (i + 1 + Math.floor(Math.random() * (FORTUNES.length - 1))) % FORTUNES.length
+  lastFortune = i
+  return FORTUNES[i]
 }
+// 예전(하루 고정) 방식이 남긴 무작위 값은 이제 쓰지 않아 지웁니다
+try { localStorage.removeItem('shrine-seed') } catch { /* 저장소를 못 써도 괜찮음 */ }
 
 function startFortune() {
   if (st.sheetKey === 'fortune') return
@@ -1515,7 +1571,7 @@ function startFortune() {
 }
 
 function showFortune() {
-  const [level, text] = fortuneOfToday()
+  const [level, text] = pickFortune()
   const W = st.world
   st.floaters.push({ x: W.fortune.x + W.fortune.w / 2, y: W.fortune.y - 16, text: `${level}!`, life: 2.2, color: '#ffd36b' })
   const body = el('div', 'sheet-body')
@@ -1636,6 +1692,7 @@ function update(dt, now) {
     const btn = $('#actBtn')
     btn.textContent = actionLabel(n)
     btn.disabled = !n
+    syncLitBtn()
   }
 
   for (const f of st.flyers) {
@@ -1910,7 +1967,7 @@ function draw(t) {
   drawSky(c, st.sky, rect, drawGlow)
 
   textLayer()
-  // 글자 자리 (AI 안경 설명이 되도록 피해 갑니다)
+  // 글자 자리 (네비게이터 설명이 되도록 피해 갑니다)
   const soft = []
   for (const [kind, args] of placeTags) soft.push((kind === 'sign' ? signLabel : placeLabel)(c, ...args))
   for (const p of people) {
@@ -1927,7 +1984,7 @@ function draw(t) {
   if (st.glasses) drawGlasses(c, t, sx, sy, cx, cy, small, soft)
 }
 
-/* ══════════ AI 안경: 보이는 것마다 옆에 설명 ══════════ */
+/* ══════════ 네비게이터: 보이는 것마다 옆에 설명 ══════════ */
 
 const GLASSES_KEY = 'shrine-glasses'
 
@@ -1941,9 +1998,9 @@ function setGlasses(on, quiet = false) {
   document.body.classList.toggle('glasses-on', on)
   const b = $('#glassesBtn')
   b.setAttribute('aria-pressed', String(on))
-  b.title = on ? 'AI 안경 벗기 (G)' : 'AI 안경 쓰기 (G): 보이는 것마다 옆에 설명이 붙어요'
+  b.title = on ? '네비게이터 끄기 (G)' : '네비게이터 켜기 (G): 보이는 것마다 옆에 설명이 붙어요'
   try { localStorage.setItem(GLASSES_KEY, on ? '1' : '0') } catch { /* 무시 */ }
-  if (!quiet) toast(on ? 'AI 안경을 썼어요. 보이는 것마다 설명이 붙어요 (G)' : 'AI 안경을 벗었어요')
+  if (!quiet) toast(on ? '네비게이터를 켰어요. 보이는 것마다 설명이 붙어요 (G)' : '네비게이터를 껐어요')
 }
 
 /** 화면 단추 설명. 위에서부터 중요한 순서로 자리를 잡습니다.
@@ -1960,7 +2017,7 @@ const HUD_NOTES = [
   { sel: '.sec-acts', side: 'above', title: '행동', text: '절하기 · 손 흔들기 · 뽀뽀 같은 동작을 해요' },
   { sel: '#hudToday', side: 'below', title: '이번 주 초', text: '초가 모일수록 기원소가 밝아져요. 월요일마다 새로 시작해요' },
   { sel: '.hud-right .list summary', side: 'below', title: '사당 목록', text: '이름을 누르면 그 사당으로 걸어가요', wide: true },
-  { sel: '#glassesBtn', side: 'below', title: 'AI 안경', text: '다시 누르거나 G 키로 설명을 숨겨요', wide: true },
+  { sel: '#glassesBtn', side: 'below', title: '네비게이터', text: '다시 누르거나 G 키로 설명을 숨겨요', wide: true },
   { sel: '#leaveBtn', side: 'below', title: '꾸미기', text: '캐릭터를 다시 꾸며요', wide: true },
 ]
 const NARROW = 720
@@ -2015,7 +2072,7 @@ function glassesWorldNotes(cx, cy) {
   const live = closest(W.plots.filter(p => st.byPlot.has(p.id)).map(p => [p.x + 24, p.y + 16, st.byPlot.get(p.id)]))
   if (live) add(live[0], live[1], 22, `${live[2].name} 사당`, '누군가 만든 프로젝트예요. 앞에서 Space로 둘러보고 초를 켜 주세요 (같은 사당은 30분에 한 번)', '#f7c27a')
   const empty = closest(W.plots.filter(p => !st.byPlot.has(p.id)).map(p => [p.x + 24, p.y + 20, p]))
-  if (empty) add(empty[0], empty[1], 20, '빈 자리', '프로젝트 등록소에서 접수하면 여기에 내 사당이 생겨요', '#b8c2d6')
+  if (empty) add(empty[0], empty[1], 20, '빈 자리', '프로젝트 등록소에서 채널 · 자리를 골라 접수하면 여기에 내 사당이 생겨요', '#b8c2d6')
 
   const ai = closest(W.props.filter(p => p.k === 'ai').map(p => [p.x, p.y - 28, p]))
   if (ai) add(ai[0], ai[1], 16, 'AI 신당', `${st.ais.map(a => a.name).join(' · ')}이 잘 돌아가게 빌어요. 몇 번이든 괜찮아요`, '#7ff0ff')
@@ -2340,7 +2397,8 @@ const REG_FAIL = {
   none: '등록 번호를 찾지 못했어요.',
   ticket: '입장 표가 만료됐어요. 다시 입장해 주세요.',
   image: '이미지를 올리지 못했어요. PNG · JPG · WebP, 10MB까지예요.',
-  plot: '그 자리는 이미 사당이 있어요. 다른 자리를 골라 주세요.',
+  plot: '그 채널의 그 자리에는 이미 사당이 있어요. 다른 자리나 채널을 골라 주세요.',
+  channel: '채널을 다시 골라 주세요.',
   consent: '개인정보 수집 · 이용에 동의해야 접수할 수 있어요.',
   blocked: '이용이 제한된 상태라 접수할 수 없어요. 문의는 화면 아래 연락처로 보내 주세요.',
   busy: '지금 올리는 사람이 많아요. 잠시 뒤 다시 해 주세요.',
@@ -2354,7 +2412,7 @@ const IMG_FAIL = {
 }
 const IMG_MAX = 10 * 1024 * 1024
 /** 서버가 돌려준 까닭 → 오류를 띄울 칸 */
-const REG_FIELD = { plot: 'plot', image: 'image', name: 'name', tagline: 'tagline', sign: 'sign', category: 'category', link: 'github', github: 'github', url: 'url', email: 'email', pin: 'pin', dup: 'github', consent: 'consent' }
+const REG_FIELD = { plot: 'plot', channel: 'plot', image: 'image', name: 'name', tagline: 'tagline', sign: 'sign', category: 'category', link: 'github', github: 'github', url: 'url', email: 'email', pin: 'pin', dup: 'github', consent: 'consent' }
 const STATUS_LABEL = { pending: '검토 중', approved: '맵에 올라감', rejected: '반려', withdrawn: '내림' }
 const MY_PROJECTS = 'shrine-my-projects'
 const reg = { tab: 'new' }
@@ -2449,7 +2507,7 @@ function projectFields(form, p = {}) {
       regField('tagline', '한 줄 소개', regInput('tagline', { max: 40, value: p.tagline, placeholder: '배포 전에 체크리스트를 챙겨 주는 봇' }), { full: true }),
       imageField(form, p),
     ),
-    ...(p.status === 'approved' ? [] : [group('자리', '고르지 않으면 빈 자리 아무 데나', plotPicker(form, p))]),
+    ...(p.status === 'approved' ? [] : [group('채널 · 자리', '사당은 고른 채널에서만 보여요', plotPicker(form, p))]),
     group('링크', '둘 중 하나는 꼭',
       regField('github', 'GitHub 저장소', regInput('github', { value: p.github, placeholder: 'https://github.com/이름/저장소' }), { full: true, optional: true }),
       regField('url', '서비스 주소', regInput('url', { value: p.url, placeholder: 'https://my-service.com' }), { full: true, optional: true }),
@@ -2466,13 +2524,39 @@ function plotArea(id) {
   return id < 10 ? '위쪽 골목' : id < 15 ? '서쪽 마당' : '서쪽 비탈 골목'
 }
 
-/** 원하는 자리 고르기: 작은 지도 위 빈 자리를 누릅니다 (이미 사당이 있는 자리는 못 고름). 고른 자리는 form.wantPlot */
+/**
+ * 원하는 채널 · 자리 고르기: 채널을 고르면 작은 지도에 그 채널의 자리가 보이고, 빈 자리를 누릅니다 (사당이 있는 자리는 못 고름).
+ * 채널마다 자리 20칸이 따로 있고, 사당은 고른 채널에서만 보입니다. 고른 값은 form.wantChannel(1~3) · form.wantPlot(null = 그 채널 아무 데나)
+ */
 function plotPicker(form, p = {}) {
   const W = st.world
+  const channels = Array.from({ length: W.channels ?? 3 }, (_, i) => i + 1)
+  // 처음 채널: 고쳐 쓰는 접수면 고른 채널(자리만 고른 예전 접수는 1번), 새 접수면 지금 있는 채널 (넘침 채널이면 1번)
+  const saved = p.wantChannel ?? (p.wantPlot != null ? 1 : null)
+  form.wantChannel = channels.includes(saved) ? saved : shrineChannel()
   form.wantPlot = p.wantPlot ?? null
+  const takenIn = ch => new Map(shrinesIn(ch).map(s => [s.plot, s]))
   const wrap = el('div', 'rplot full')
   wrap.dataset.name = 'plot'
   wrap.classList.add('rf')
+  const chans = el('div', 'rplot-chans')
+  chans.setAttribute('role', 'radiogroup')
+  chans.setAttribute('aria-label', '채널 고르기')
+  const chanButtons = new Map()
+  for (const ch of channels) {
+    const b = el('button', 'chip')
+    b.type = 'button'
+    b.setAttribute('role', 'radio')
+    b.addEventListener('click', () => {
+      if (form.wantChannel === ch) return
+      form.wantChannel = ch
+      // 같은 번호 자리가 그 채널에서도 비어 있으면 그대로 둡니다
+      if (form.wantPlot != null && takenIn(ch).has(form.wantPlot)) form.wantPlot = null
+      update()
+    })
+    chanButtons.set(ch, b)
+    chans.append(b)
+  }
   const map = el('div', 'rplot-map')
   map.style.aspectRatio = `${W.w} / ${W.fenceY ?? W.h}`
   const cv = document.createElement('canvas')
@@ -2494,21 +2578,36 @@ function plotPicker(form, p = {}) {
   const status = el('p', 'rplot-status')
   const buttons = new Map()
   const update = () => {
-    for (const [id, b] of buttons) b.classList.toggle('on', id === form.wantPlot)
-    status.textContent = form.wantPlot == null ? '아무 자리나 괜찮아요' : `고른 자리: ${plotArea(form.wantPlot)} ${form.wantPlot}번`
+    const ch = form.wantChannel
+    const taken = takenIn(ch)
+    for (const [c, b] of chanButtons) {
+      const free = W.plots.length - takenIn(c).size
+      b.setAttribute('aria-checked', String(c === ch))
+      b.textContent = `채널 ${c}`
+      b.append(el('small', null, `빈 ${free}`))
+      b.setAttribute('aria-label', `채널 ${c} · 빈 자리 ${free}칸`)
+    }
+    for (const [id, b] of buttons) {
+      const s = taken.get(id)
+      b.classList.toggle('taken', !!s)
+      b.classList.toggle('on', id === form.wantPlot)
+      b.disabled = !!s
+      b.setAttribute('aria-label', `채널 ${ch} ${plotArea(id)} ${id}번${s ? ' (사당 있음)' : ''}`)
+      b.title = s ? `${s.name} 자리` : `${plotArea(id)} ${id}번`
+    }
+    const left = W.plots.length - taken.size
+    status.textContent = form.wantPlot != null
+      ? `고른 자리: 채널 ${ch} · ${plotArea(form.wantPlot)} ${form.wantPlot}번`
+      : left ? `채널 ${ch} · 빈 자리 아무 데나` : `채널 ${ch}: 자리가 다 찼어요. 다른 채널을 골라 주세요`
     wrap.classList.remove('bad')
   }
   for (const plot of W.plots) {
-    const taken = st.byPlot.has(plot.id)
-    const b = el('button', taken ? 'taken' : null)
+    const b = el('button')
     b.type = 'button'
     b.style.left = `${(plot.x + 4) / W.w * 100}%`
     b.style.top = `${plot.y / (W.fenceY ?? W.h) * 100}%`
     b.style.width = `${40 / W.w * 100}%`
     b.style.height = `${40 / (W.fenceY ?? W.h) * 100}%`
-    b.setAttribute('aria-label', `${plotArea(plot.id)} ${plot.id}번${taken ? ' (사당 있음)' : ''}`)
-    b.title = taken ? `${st.byPlot.get(plot.id)?.name ?? '사당'} 자리` : `${plotArea(plot.id)} ${plot.id}번`
-    b.disabled = taken
     b.addEventListener('click', () => { form.wantPlot = form.wantPlot === plot.id ? null : plot.id; update() })
     buttons.set(plot.id, b)
     map.append(b)
@@ -2518,7 +2617,7 @@ function plotPicker(form, p = {}) {
   any.addEventListener('click', () => { form.wantPlot = null; update() })
   const row = el('div', 'rplot-row')
   row.append(status, any)
-  wrap.append(map, row, el('small', 'rf-err'))
+  wrap.append(chans, map, row, el('small', 'rf-err'))
   update()
   return wrap
 }
@@ -2722,7 +2821,7 @@ function regNew(body) {
       data.screen = up.id
     }
     submit.textContent = '확인하는 중…'
-    const r = await regApi('/api/submit', { ...data, pin: p, plot: form.wantPlot ?? null, consent: true })
+    const r = await regApi('/api/submit', { ...data, pin: p, plot: form.wantPlot ?? null, channel: form.wantChannel ?? null, consent: true })
     submit.disabled = false
     submit.textContent = '접수하기'
     if (!r.ok) return showFieldError(form, r.reason)
@@ -2886,7 +2985,7 @@ function showEditor(area, id, pin, p) {
       if (!up.ok) return showImageError(form, up.reason)
       data.screen = up.id
     } else if (form.imageCleared) data.screen = ''
-    const r = await regApi('/api/manage/save', { id, pin, ...data, ...(newPin ? { newPin } : {}), ...(p.status === 'approved' ? {} : { plot: form.wantPlot ?? null }) })
+    const r = await regApi('/api/manage/save', { id, pin, ...data, ...(newPin ? { newPin } : {}), ...(p.status === 'approved' ? {} : { plot: form.wantPlot ?? null, channel: form.wantChannel ?? null }) })
     if (!r.ok) return showFieldError(form, r.reason)
     toast(r.linkReview ? '저장했어요. 바뀐 링크는 확인 뒤 반영돼요.' : '저장했어요.')
     showEditor(area, id, newPin || pin, r.project ?? p)

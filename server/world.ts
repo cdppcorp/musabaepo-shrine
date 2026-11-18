@@ -56,6 +56,19 @@ const SPOTS: [number, number][] = [
   [96, 404], [152, 420], [208, 436], [264, 452], [320, 468],
 ]
 
+/**
+ * 채널: 1~3번이 늘 있습니다 (realtime.ts). 채널마다 위 사당 자리 20칸(PLOTS)이 따로 있어 사당은 모두 60곳까지 들어가고,
+ * 사당은 자기 채널에서만 보입니다 (shrines.channel). 화면은 /api/world의 사당마다 붙은 channel로 걸러 그립니다.
+ */
+export const CHANNELS = 3
+export const isChannel = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= CHANNELS
+/**
+ * 접속한 채널에서 보이는 사당의 채널. 1~3번은 그 채널 그대로이고, 그 밖의 번호(고정 채널이 모두 차서 생기는
+ * 넘침 채널)는 기본으로 1번 채널의 사당을 보여 줍니다. 지금 realtime.ts는 넘침 채널을 만들지 않지만, 생기면 이 규칙을 따릅니다.
+ * 화면(public/js/main.js shrineChannel)도 같은 규칙입니다.
+ */
+export const shrineChannelOf = (channel: number) => (isChannel(channel) ? channel : 1)
+
 export const PLOTS: Plot[] = SPOTS.map(([x, y], id) => ({
   id, x, y,
   // 위쪽 골목 사당은 뒤가 담에 붙어 있고 옆 사당과 이어져 있습니다 (사당 사이 막다른 틈으로 들어가지 않게)
@@ -302,6 +315,7 @@ export const WORLD_JSON = {
   speed: SPEED,
   near: NEAR,
   plots: PLOTS,
+  channels: CHANNELS,
   solids: SOLIDS,
   fortune: FORTUNE,
   spawn: SPAWN,

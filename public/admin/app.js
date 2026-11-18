@@ -82,6 +82,11 @@ const fmtTime = ms => (Number.isFinite(ms) ? TIME.format(new Date(ms)) : '-')
 const fmtN = n => Number(n ?? 0).toLocaleString('ko-KR')
 const plotArea = id => (id < 10 ? '위쪽 골목' : id < 15 ? '서쪽 마당' : '서쪽 비탈 골목')
 const plotName = id => `${id}번 · ${plotArea(id)}`
+/** 채널 번호들 (1~3). 채널마다 사당 자리 20칸이 따로 있고, 사당은 자기 채널에서만 보입니다 */
+const channelIds = W => Array.from({ length: W?.world?.channels ?? 3 }, (_, i) => i + 1)
+/** 채널 → 빈 자리 번호들 */
+const freeIn = (free, ch) => free?.[ch] ?? []
+const freeTotal = free => Object.values(free ?? {}).reduce((a, list) => a + list.length, 0)
 
 let toastTimer = 0
 function toast(text) {
@@ -211,20 +216,52 @@ async function getWorld() {
 }
 
 /**
- * 자리 고르기: 작은 지도 위 빈 자리를 누릅니다. free = 빈 자리 번호들, names = 자리 → 사당 이름.
- * auto면 '자동'(null)도 고를 수 있습니다. 고른 값은 picker.value (null = 자동)
+ * 자리 고르기: 채널을 고르고, 작은 지도 위 빈 자리를 누릅니다. 채널마다 자리 20칸이 따로 있고 사당은 자기 채널에서만 보입니다.
+ * free = 채널 → 빈 자리 번호들, names = '채널:자리' → 사당 이름, channel = 처음 고른 채널,
+ * current · want = 지금 자리 · 작성자가 원한 자리 { channel, plot }.
+ * auto면 자리를 '자동'(null)으로 둘 수 있습니다 (autoLabel(채널)이 목록 첫 줄). 고른 값은 picker.channel · picker.value (null = 자동)
  */
-function plotPicker(W, { free, names = new Map(), current = null, want = null, auto = false, autoLabel = '자동' }) {
+function plotPicker(W, { free, names = new Map(), channel = 1, current = null, want = null, auto = false, autoLabel = () => '자동' }) {
   const wrap = h('div', { class: 'rplot' })
-  const freeSet = new Set(free)
   wrap.value = null
+  wrap.channel = channel
   const status = h('p', { class: 'rplot-status' })
   const buttons = new Map()
+  const chanSel = select('channel', channelIds(W).map(ch => [String(ch), `채널 ${ch} · 빈 자리 ${freeIn(free, ch).length}칸`]), String(channel))
+  chanSel.classList.add('plot-select')
+  chanSel.setAttribute('aria-label', '채널')
+  const list = h('select', { name: 'plot', class: 'plot-select', 'aria-label': '자리' })
+  // 목록: 지도를 못 그릴 때(맵 정보를 못 받음)도 고를 수 있게, 고른 채널의 빈 자리만
+  const fillList = () => {
+    list.textContent = ''
+    const opts = [auto ? ['', autoLabel(wrap.channel)] : ['', '자리를 고르세요'], ...freeIn(free, wrap.channel).map(id => [String(id), plotName(id)])]
+    for (const [k, label] of opts) list.append(h('option', { value: k }, label))
+  }
+  const paint = () => {
+    const ch = wrap.channel
+    const freeSet = new Set(freeIn(free, ch))
+    for (const [id, b] of buttons) {
+      const isFree = freeSet.has(id)
+      const isCurrent = current?.channel === ch && current.plot === id
+      const isWant = want?.channel === ch && want.plot === id
+      b.className = [isFree ? '' : 'taken', isCurrent ? 'here' : '', isWant ? 'want' : '', id === wrap.value ? 'on' : ''].filter(Boolean).join(' ')
+      const label = isCurrent ? `채널 ${ch} · ${plotName(id)} (지금 자리)`
+        : isFree ? `채널 ${ch} · ${plotName(id)}${isWant ? ' (작성자가 원한 자리)' : ''}`
+          : `채널 ${ch} · ${plotName(id)} · ${names.get(`${ch}:${id}`) ?? '사당 있음'}`
+      b.setAttribute('aria-label', label)
+      b.title = label
+      b.disabled = !isFree
+    }
+  }
   const update = () => {
-    for (const [id, b] of buttons) b.classList.toggle('on', id === wrap.value)
-    status.textContent = wrap.value == null ? (auto ? '지도나 목록에서 고르지 않으면 자동' : '지도에서 빈 자리를 누르세요') : `고른 자리: ${plotName(wrap.value)}`
+    paint()
+    list.value = wrap.value == null ? '' : String(wrap.value)
+    status.textContent = wrap.value == null
+      ? `채널 ${wrap.channel} · ${auto ? '지도나 목록에서 고르지 않으면 자동' : '지도에서 빈 자리를 누르세요'}`
+      : `고른 자리: 채널 ${wrap.channel} · ${plotName(wrap.value)}`
     wrap.dispatchEvent(new Event('change'))
   }
+  wrap.append(h('div', { class: 'rplot-row rplot-chan' }, h('span', { class: 'rf-label' }, '채널'), chanSel))
   if (W?.world) {
     const world = W.world
     const mapH = world.fenceY ?? world.h
@@ -244,31 +281,33 @@ function plotPicker(W, { free, names = new Map(), current = null, want = null, a
     }
     map.append(cv)
     for (const plot of world.plots ?? []) {
-      const isFree = freeSet.has(plot.id)
-      const isCurrent = plot.id === current
-      const b = h('button', { type: 'button', class: [isFree ? '' : 'taken', isCurrent ? 'here' : '', plot.id === want ? 'want' : ''].join(' ').trim() || null })
+      const b = h('button', { type: 'button' })
       b.style.left = `${(plot.x + 4) / world.w * 100}%`
       b.style.top = `${plot.y / mapH * 100}%`
       b.style.width = `${40 / world.w * 100}%`
       b.style.height = `${40 / mapH * 100}%`
-      const label = isCurrent ? `${plotName(plot.id)} (지금 자리)` : isFree ? `${plotName(plot.id)}${plot.id === want ? ' (작성자가 원한 자리)' : ''}` : `${plotName(plot.id)} · ${names.get(plot.id) ?? '사당 있음'}`
-      b.setAttribute('aria-label', label)
-      b.title = label
       b.append(h('span', null, String(plot.id)))
-      b.disabled = !isFree
       b.addEventListener('click', () => { wrap.value = auto && wrap.value === plot.id ? null : plot.id; update() })
       buttons.set(plot.id, b)
       map.append(b)
     }
     wrap.append(map)
   }
-  // 지도를 못 그리면(맵 정보를 못 받음) 목록으로 고릅니다
-  const list = select('plot', [...(auto ? [['', autoLabel]] : [['', '자리를 고르세요']]), ...free.map(id => [String(id), plotName(id)])], '')
-  list.classList.add('plot-select')
-  list.addEventListener('change', () => { wrap.value = list.value === '' ? null : Number(list.value); update() })
-  wrap.addEventListener('change', () => { list.value = wrap.value == null ? '' : String(wrap.value) })
-  const row = h('div', { class: 'rplot-row' }, status, list)
-  wrap.append(row)
+  chanSel.addEventListener('change', e => {
+    e.stopPropagation()
+    wrap.channel = Number(chanSel.value)
+    // 다른 채널에서 같은 번호 자리가 비어 있으면 그대로 둡니다
+    if (wrap.value != null && !freeIn(free, wrap.channel).includes(wrap.value)) wrap.value = null
+    fillList()
+    update()
+  })
+  list.addEventListener('change', e => {
+    e.stopPropagation()
+    wrap.value = list.value === '' ? null : Number(list.value)
+    update()
+  })
+  wrap.append(h('div', { class: 'rplot-row' }, status, list))
+  fillList()
   update()
   return wrap
 }
@@ -351,15 +390,17 @@ async function viewDashboard() {
       card({ label: '지금 접속', value: `${fmtN(people)}명`, note: `NPC ${fmtN(npcs)}명은 따로` }),
       card({ label: '오늘 켠 초', value: fmtN(d.candles.today), note: '한국 시간 0시부터' }),
       card({ label: '이번 주 초', value: fmtN(d.candles.week), note: '월요일 0시부터' }),
-      card({ label: '사당', value: `${fmtN(d.shrines.total)}곳`, note: `운영 중 ${d.shrines.live} · 닫힘 ${d.shrines.check} · 빈 자리 ${d.shrines.free}`, href: '#shrines' }),
+      card({ label: '사당', value: `${fmtN(d.shrines.total)}곳`, note: `운영 중 ${d.shrines.live} · 닫힘 ${d.shrines.check} · 빈 자리 ${d.shrines.free} (세 채널)`, href: '#shrines' }),
       card({ label: '새 접수', value: fmtN(d.projects.pending), note: '검토를 기다리는 등록', href: '#projects?f=pending', alert: d.projects.pending > 0 }),
       card({ label: '링크 · 이미지 변경', value: fmtN(d.projects.changes), note: '맵에 있는 사당이 바꾼 내용', href: '#projects?f=changes', alert: d.projects.changes > 0 }),
       card({ label: '신고된 글', value: fmtN(d.posts.reported), note: `숨긴 글 ${d.posts.hidden} · 보관 중 ${d.posts.total}`, href: '#posts', alert: d.posts.reported > 0 }),
       card({ label: '접속자 신고', value: fmtN(d.moderation?.reports), note: `차단 ${fmtN(d.moderation?.blocks)} · 강퇴 ${fmtN(d.moderation?.kicks)} · 직접 채팅 ${d.moderation?.freeChat ? '켜짐' : '꺼짐'}`, href: '#people', alert: d.moderation?.reports > 0 }),
     ),
     panel('채널별 인원',
-      table(['채널', '사람', 'NPC', '합계'], ch.map(c => ({ cells: [`${c.id}번 채널`, fmtN(c.n), fmtN(c.npc), fmtN(c.n + c.npc)] })), { numeric: [1, 2, 3] }),
-      h('p', { class: 'note' }, '사람은 채널당 20명까지 들어옵니다. NPC는 사람이 들어오면 자리를 비켜 줍니다.')),
+      table(['채널', '사람', 'NPC', '합계', '빈 사당 자리'], ch.map(c => ({
+        cells: [`${c.id}번 채널`, fmtN(c.n), fmtN(c.npc), fmtN(c.n + c.npc), d.shrines.freeByChannel?.[c.id] == null ? '-' : `${d.shrines.freeByChannel[c.id]}칸`],
+      })), { numeric: [1, 2, 3, 4] }),
+      h('p', { class: 'note' }, '사람은 채널당 20명까지 들어옵니다. NPC는 사람이 들어오면 자리를 비켜 줍니다. 사당은 채널마다 따로 서고 자기 채널에서만 보입니다.')),
   )
 }
 
@@ -561,7 +602,10 @@ async function projectDetail(id, freePlots, filter) {
   const [d, W] = await Promise.all([api(`project?id=${id}`), getWorld()])
   if (!d.ok) return panel(null, errorBox(d))
   const p = d.project
-  const free = d.freePlots ?? freePlots ?? []
+  const free = d.freePlots ?? freePlots ?? {}
+  // 작성자가 고른 채널 (자리만 골라 둔 예전 접수는 1번 채널, 둘 다 없으면 아무 채널)
+  const wantCh = p.wantChannel ?? (p.wantPlot != null ? 1 : null)
+  const wish = `${wantCh == null ? '아무 채널' : `채널 ${wantCh}`} · ${p.wantPlot == null ? '아무 자리' : plotName(p.wantPlot)}`
   const after = async r => {
     if (!r.ok) return toast(why(r))
     toast(r.message ?? '처리했습니다')
@@ -583,7 +627,7 @@ async function projectDetail(id, freePlots, filter) {
       p.reviewAt ? ['검토 대기', `${fmtTime(p.reviewAt)}부터`, '90일이 지나면 저절로 끝납니다'] : null,
       p.closedAt ? ['닫힌 때', fmtTime(p.closedAt), p.purgedAt ? '' : '30일 뒤 개인정보 파기'] : null,
       p.purgedAt ? ['파기', fmtTime(p.purgedAt), '이메일 · 비밀번호 해시 · 링크 · 이미지를 지웠습니다'] : null,
-      ['원하는 자리', p.wantPlot == null ? '아무 데나' : plotName(p.wantPlot)],
+      ['원하는 채널 · 자리', wish],
       p.slug ? ['사당', h('a', { href: `#shrines?edit=${encodeURIComponent(p.slug)}` }, p.slug)] : null,
       p.note ? ['메모', p.note] : null,
     ]),
@@ -606,19 +650,26 @@ async function projectDetail(id, freePlots, filter) {
 
   const note = input('note', { max: 80, placeholder: '사유 (작성자에게 보입니다, 80자까지)' })
   if (p.status === 'pending') {
+    // 처음 채널: 작성자가 고른 채널에 빈 자리가 있으면 그 채널, 아니면 빈 자리가 있는 첫 채널
+    const hasFree = ch => freeIn(free, ch).length > 0
+    const startCh = wantCh != null && hasFree(wantCh) ? wantCh : channelIds(W).find(hasFree) ?? wantCh ?? 1
     const picker = plotPicker(W, {
-      free, auto: true, want: p.wantPlot,
-      autoLabel: p.wantPlot != null && free.includes(p.wantPlot) ? `자동: 원하는 자리 ${p.wantPlot}번` : '자동: 첫 빈 자리',
+      free, auto: true, channel: startCh, want: p.wantPlot != null ? { channel: wantCh, plot: p.wantPlot } : null,
+      autoLabel: ch => ch === wantCh && p.wantPlot != null && freeIn(free, ch).includes(p.wantPlot)
+        ? `자동: 원하는 자리 ${p.wantPlot}번`
+        : hasFree(ch) ? `자동: 첫 빈 자리 (${freeIn(free, ch)[0]}번)` : '빈 자리가 없습니다',
     })
     const approve = h('button', { class: 'btn btn-main', type: 'button' }, '승인하고 사당 세우기')
     approve.addEventListener('click', () => busy(approve, async () => {
-      if (!free.length) return toast('빈 사당 자리가 없습니다')
-      after(await api('project/approve', { id: p.id, ...(picker.value != null ? { plot: picker.value } : {}) }))
+      if (!hasFree(picker.channel)) return toast(`채널 ${picker.channel}에는 빈 사당 자리가 없습니다`)
+      after(await api('project/approve', { id: p.id, channel: picker.channel, ...(picker.value != null ? { plot: picker.value } : {}) }))
     }))
     const reject = h('button', { class: 'btn btn-danger', type: 'button' }, '반려')
     reject.addEventListener('click', () => busy(reject, async () => after(await api('project/reject', { id: p.id, note: note.value }))))
     box.append(
-      h('div', { class: 'act' }, h('h3', null, '승인'), h('p', { class: 'note' }, '고르지 않으면 작성자가 원한 자리, 그 자리가 찼으면 첫 빈 자리에 세웁니다.'), picker, h('div', { class: 'act-row' }, approve)),
+      h('div', { class: 'act' }, h('h3', null, '승인'),
+        h('p', { class: 'note' }, '사당은 고른 채널에서만 보입니다. 자리를 고르지 않으면 작성자가 원한 자리(그 채널일 때), 찼으면 그 채널의 첫 빈 자리에 세웁니다.'),
+        picker, h('div', { class: 'act-row' }, approve)),
       h('div', { class: 'act' }, h('h3', null, '반려'), h('div', { class: 'act-row' }, note, reject)),
     )
   } else if (p.changes) {
@@ -657,11 +708,12 @@ async function viewShrines(q) {
   const editing = q.get('edit')
   const adding = q.get('add') === '1'
   const shrines = d.shrines
-  const names = new Map(shrines.map(s => [s.plot, s.name]))
+  const free = d.freePlots ?? {}
+  const names = new Map(shrines.map(s => [`${s.channel}:${s.plot}`, s.name]))
   const rows = shrines.map(s => ({
     slug: s.slug,
     cells: [
-      h('span', { class: 'mono' }, String(s.plot)),
+      h('span', { class: 'mono', title: `채널 ${s.channel} · ${plotName(s.plot)}` }, `${s.channel} · ${s.plot}`),
       h('div', { class: 'cell-main' }, h('strong', null, s.name), h('small', { class: 'mono' }, s.slug),
         s.errors.length ? h('small', { class: 'bad-text' }, `맵에서 숨김: ${s.errors.join(' / ')}`) : null),
       pill(s.status, SHRINE_STATUS[s.status] ?? s.status),
@@ -670,27 +722,27 @@ async function viewShrines(q) {
     ],
   }))
   const side = h('div', { class: 'split-side' })
-  if (adding) side.append(addForm(W, d.freePlots, names))
+  if (adding) side.append(addForm(W, free, names))
   else if (editing) {
     const s = shrines.find(x => x.slug === editing)
-    side.append(s ? editForm(W, s, d.freePlots, names) : panel(null, errorBox({ reason: 'none' })))
+    side.append(s ? editForm(W, s, free, names) : panel(null, errorBox({ reason: 'none' })))
   } else {
     side.append(panel(null, empty(shrines.length
       ? '목록에서 사당을 고르면 고치기 · 옮기기 · 내리기를 할 수 있습니다.'
       : '아직 사당이 없습니다. "사당 추가"로 첫 사당을 세우거나, 등록소 접수를 승인하세요.')))
   }
   return frag(
-    head('사당', `${shrines.length}곳 · 빈 자리 ${d.freePlots.length}/${d.plots}칸`,
+    head('사당', `${shrines.length}곳 · 빈 자리 ${freeTotal(free)}/${d.plots * channelIds(W).length}칸 (${channelIds(W).map(ch => `채널 ${ch} ${freeIn(free, ch).length}`).join(' · ')})`,
       h('a', { class: 'btn btn-main btn-sm', href: '#shrines?add=1' }, '사당 추가')),
     h('div', { class: 'split' },
       h('div', { class: 'split-main panel' },
         shrines.length
-          ? table(['자리', '사당', '상태', '주소', '출처'], rows, {
+          ? table(['채널 · 자리', '사당', '상태', '주소', '출처'], rows, {
             onRow: r => { location.hash = `#shrines?edit=${encodeURIComponent(r.slug)}` },
             narrowHide: [3, 4],
             selected: rows.findIndex(r => r.slug === editing),
           })
-          : empty('아직 사당이 없습니다. 맵은 빈 자리 20칸으로 시작합니다.')),
+          : empty('아직 사당이 없습니다. 맵은 채널마다 빈 자리 20칸으로 시작합니다.')),
       side),
   )
 }
@@ -713,7 +765,11 @@ function formError(form, text) {
 
 function addForm(W, free, names) {
   const image = imagePicker('', { required: true })
-  const picker = plotPicker(W, { free, names, auto: true, autoLabel: free.length ? `자동: 첫 빈 자리 (${free[0]}번)` : '빈 자리가 없습니다' })
+  const startCh = channelIds(W).find(ch => freeIn(free, ch).length) ?? 1
+  const picker = plotPicker(W, {
+    free, names, auto: true, channel: startCh,
+    autoLabel: ch => (freeIn(free, ch).length ? `자동: 첫 빈 자리 (${freeIn(free, ch)[0]}번)` : '빈 자리가 없습니다'),
+  })
   const submit = h('button', { class: 'btn btn-main', type: 'submit' }, '사당 세우기')
   const form = h('form', { class: 'panel shrine-form', novalidate: true },
     h('div', { class: 'detail-head' }, h('h2', null, '사당 추가'), h('a', { class: 'btn btn-sm', href: '#shrines' }, '닫기')),
@@ -732,7 +788,7 @@ function addForm(W, free, names) {
       field('주소 이름 (slug)', input('slug', { max: 40, placeholder: '비우면 자동' }), { optional: true }),
       h('div', { class: 'rf full switches' }, toggle('emailPublic', '사당에 이메일 공개', false), toggle('keeper', '관리인 사당 (금빛 장식)', false)),
       h('div', { class: 'rf full' }, h('span', { class: 'rf-label' }, '이미지'), image),
-      h('div', { class: 'rf full' }, h('span', { class: 'rf-label' }, '자리'), picker),
+      h('div', { class: 'rf full' }, h('span', { class: 'rf-label' }, '채널 · 자리'), picker),
     ),
     h('div', { class: 'form-foot' }, h('p', { class: 'form-msg', role: 'status', 'aria-live': 'polite' }), submit),
   )
@@ -743,12 +799,13 @@ function addForm(W, free, names) {
       if (!image.file) return formError(form, '이미지를 골라 주세요')
       const v = formValues(form)
       delete v.plot
+      delete v.channel
       formError(form, '이미지를 올리는 중…')
       const up = await uploadImage(image.file)
       if (!up.ok) return formError(form, why(up))
-      const r = await api('shrine/add', { ...v, screen: up.id, ...(picker.value != null ? { plot: picker.value } : {}) })
+      const r = await api('shrine/add', { ...v, screen: up.id, channel: picker.channel, ...(picker.value != null ? { plot: picker.value } : {}) })
       if (!r.ok) return formError(form, why(r))
-      toast(`사당을 세웠습니다: ${r.shrine.name} (${r.shrine.plot}번)`)
+      toast(`사당을 세웠습니다: ${r.shrine.name} (채널 ${r.shrine.channel} · ${r.shrine.plot}번)`)
       location.hash = `#shrines?edit=${encodeURIComponent(r.shrine.slug)}`
     })
   })
@@ -799,14 +856,14 @@ function editForm(W, s, free, names) {
     })
   })
 
-  // 옮기기
-  const picker = plotPicker(W, { free, names, current: s.plot })
+  // 옮기기 (다른 채널로 옮기면 그 채널에서만 보입니다)
+  const picker = plotPicker(W, { free, names, channel: s.channel, current: { channel: s.channel, plot: s.plot } })
   const move = h('button', { class: 'btn', type: 'button' }, '이 자리로 옮기기')
   move.addEventListener('click', () => busy(move, async () => {
     if (picker.value == null) return toast('옮길 빈 자리를 고르세요')
-    const r = await api('shrine/move', { slug: s.slug, plot: picker.value })
+    const r = await api('shrine/move', { slug: s.slug, channel: picker.channel, plot: picker.value })
     if (!r.ok) return toast(why(r))
-    toast(`${s.name}: ${s.plot}번 → ${r.shrine.plot}번`)
+    toast(`${s.name}: 채널 ${s.channel} · ${s.plot}번 → 채널 ${r.shrine.channel} · ${r.shrine.plot}번`)
     await route()
   }))
 
@@ -828,14 +885,14 @@ function editForm(W, s, free, names) {
       h('a', { class: 'btn btn-sm', href: '#shrines' }, '닫기')),
     dl([
       ['주소 이름', h('span', { class: 'mono' }, s.slug)],
-      ['자리', plotName(s.plot)],
+      ['자리', `채널 ${s.channel} · ${plotName(s.plot)}`, '이 채널에서만 보입니다'],
       ['출처', s.projectId ? h('a', { href: `#projects?f=all&id=${s.projectId}` }, `등록소 접수 #${s.projectId}`) : '운영자가 직접 넣음'],
       ['들어온 날', s.joinedAt, s.verifiedDomain ? `· 주소 확인 ${s.verifiedDomain}` : ''],
       s.email ? ['이메일', s.email, s.emailPublic ? '(공개)' : '(비공개)'] : null,
       s.errors.length ? ['맵에서 숨김', h('span', { class: 'bad-text' }, s.errors.join(' / '))] : null,
     ]),
     h('div', { class: 'act' }, h('h3', null, '고치기'), form),
-    h('div', { class: 'act' }, h('h3', null, '옮기기'), free.length ? [picker, h('div', { class: 'act-row' }, move)] : h('p', { class: 'note' }, '빈 자리가 없습니다.')),
+    h('div', { class: 'act' }, h('h3', null, '옮기기'), freeTotal(free) ? [picker, h('div', { class: 'act-row' }, move)] : h('p', { class: 'note' }, '빈 자리가 없습니다.')),
     h('div', { class: 'act' }, h('h3', null, '내리기'), h('div', { class: 'act-row' }, note, remove)),
   )
 }

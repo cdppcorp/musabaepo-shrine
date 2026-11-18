@@ -16,11 +16,11 @@ import { fileURLToPath } from 'node:url'
 import { config, devSkipHumanCheck, isProd } from './config.ts'
 import { db } from './db.ts'
 import { clientIp, ipHash, parseCookies } from './security.ts'
-import { candleSummary } from './shrines.ts'
+import { candleSummary, freePlotsByChannel } from './shrines.ts'
 import {
   approveProject, isProjectFilter, projectCounts, projectForAdmin, projectsByFilter, rejectProject,
 } from './registry.ts'
-import { OpError, addShrine, cleanNote, freePlotIds, moveShrine, removeShrine, shrinesForAdmin, updateShrine } from './ops.ts'
+import { OpError, addShrine, cleanNote, moveShrine, moveText, removeShrine, shrinesForAdmin, spotName, updateShrine } from './ops.ts'
 import { deletePost, findPost, postCounts, postsForReview, setPostHidden } from './ai.ts'
 import { UPLOAD_MAX, ownsUpload, saveUpload, setReviewerCheck } from './uploads.ts'
 import { destroyProjectNow } from './retention.ts'
@@ -29,7 +29,10 @@ import {
   BLOCK_MAX_MS, ModerationError, addBlock, blockCounts, closeUserReport, findUserReport, listBlocks, listUserReports, openReportCount,
   removeBlock, type BlockView,
 } from './moderation.ts'
-import { PLOTS } from './world.ts'
+import { CHANNELS, PLOTS, isChannel } from './world.ts'
+
+/** 빈 자리 수 (채널 1~3 모두) */
+const freeCount = (free: Record<number, number[]>) => Object.values(free).reduce((a, list) => a + list.length, 0)
 
 const ADMIN_DIR = resolve(fileURLToPath(new URL('../public/admin', import.meta.url)))
 const base = config.basePath
@@ -264,6 +267,8 @@ function dashboard() {
   const rt = channelStats()
   const candles = candleSummary()
   const shrines = db.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(status = 'live'), 0) AS live FROM shrines`).get() as { total: number; live: number }
+  // 사당 자리는 채널마다 20칸 (free · plots는 세 채널을 합한 수, freeByChannel은 채널별 빈 자리 수)
+  const free = freePlotsByChannel()
   return {
     connections: rt.connections,
     channels: rt.channels,
@@ -271,7 +276,10 @@ function dashboard() {
     candles: { today: candles.today, week: candles.weekTotal },
     projects: projectCounts(),
     posts: postCounts(),
-    shrines: { total: shrines.total, live: shrines.live, check: shrines.total - shrines.live, free: freePlotIds().length, plots: PLOTS.length },
+    shrines: {
+      total: shrines.total, live: shrines.live, check: shrines.total - shrines.live, free: freeCount(free), plots: PLOTS.length * CHANNELS,
+      freeByChannel: Object.fromEntries(Object.entries(free).map(([ch, list]) => [ch, list.length])),
+    },
   }
 }
 
@@ -299,7 +307,7 @@ function settings() {
     { key: 'ADMIN_PASSWORD', label: '운영자 비밀번호', value: set('ADMIN_PASSWORD') },
     { key: 'ADMIN_IPS', label: '운영자 화면 허용 IP', value: A.ips.size ? [...A.ips].join(', ') : '(제한 없음)' },
     { key: '—', label: '운영자 세션 길이', value: `${SESSION_MS / 3600_000}시간` },
-    { key: '—', label: '사당 자리', value: `${PLOTS.length}칸 (빈 자리 ${freePlotIds().length})` },
+    { key: '—', label: '사당 자리', value: `채널마다 ${PLOTS.length}칸 × ${CHANNELS}채널 (빈 자리 ${freeCount(freePlotsByChannel())})` },
     { key: '—', label: 'Node', value: process.version },
   ]
 }
@@ -318,7 +326,7 @@ async function reads(req: IncomingMessage, res: ServerResponse, s: Session, acti
     case 'projects': {
       const filter = q.get('filter') ?? 'review'
       if (!isProjectFilter(filter)) return fail(res, 400, 'bad')
-      return json(res, 200, { ok: true, filter, projects: projectsByFilter(filter), freePlots: freePlotIds() })
+      return json(res, 200, { ok: true, filter, projects: projectsByFilter(filter), freePlots: freePlotsByChannel(), channels: CHANNELS })
     }
     case 'project': {
       const id = readId(q.get('id'))
@@ -326,13 +334,14 @@ async function reads(req: IncomingMessage, res: ServerResponse, s: Session, acti
       if (!p) return fail(res, 404, 'none')
       // 이메일(개인정보)을 보는 화면이라 누가 언제 어느 접수를 열었는지 남깁니다
       if (p.email) logAction(req, 'project-view', id ?? '')
-      return json(res, 200, { ok: true, project: p, freePlots: freePlotIds() })
+      return json(res, 200, { ok: true, project: p, freePlots: freePlotsByChannel(), channels: CHANNELS })
     }
     case 'shrines': {
       const shrines = shrinesForAdmin()
       const withEmail = shrines.filter(x => x.email).length
       if (withEmail) logAction(req, 'shrines-view', '', `이메일 ${withEmail}곳`)
-      return json(res, 200, { ok: true, shrines, freePlots: freePlotIds(), plots: PLOTS.length })
+      // freePlots: 채널 번호 → 빈 자리 번호들, plots: 채널 하나의 자리 수
+      return json(res, 200, { ok: true, shrines, freePlots: freePlotsByChannel(), plots: PLOTS.length, channels: CHANNELS })
     }
     case 'posts':
       return json(res, 200, { ok: true, posts: postsForReview() })
@@ -469,7 +478,14 @@ async function writes(req: IncomingMessage, res: ServerResponse, s: Session, act
         if (n == null) return fail(res, 400, 'bad')
         plot = n
       }
-      const message = approveProject(id, plot)
+      // 채널을 비우면 작성자가 고른 채널 (registry.ts approveProject)
+      let channel: number | undefined
+      if (body.channel != null && body.channel !== '') {
+        const n = readId(body.channel)
+        if (n == null || !isChannel(n)) return fail(res, 400, 'bad')
+        channel = n
+      }
+      const message = approveProject(id, plot, channel)
       const p = projectForAdmin(id)
       logAction(req, 'project-approve', id, message)
       return json(res, 200, { ok: true, message, project: p })
@@ -496,7 +512,7 @@ async function writes(req: IncomingMessage, res: ServerResponse, s: Session, act
 
     case 'shrine/add': {
       const shrine = addShrine(body, screensFrom(body.screen, s))
-      logAction(req, 'shrine-add', shrine.slug, `${shrine.name} · 자리 ${shrine.plot}`)
+      logAction(req, 'shrine-add', shrine.slug, `${shrine.name} · ${spotName(shrine.channel, shrine.plot)}`)
       return json(res, 201, { ok: true, shrine })
     }
 
@@ -509,8 +525,8 @@ async function writes(req: IncomingMessage, res: ServerResponse, s: Session, act
     }
 
     case 'shrine/move': {
-      const r = moveShrine(body.slug, body.plot)
-      logAction(req, 'shrine-move', r.shrine.slug, `${r.from} → ${r.shrine.plot}`)
+      const r = moveShrine(body.slug, body.plot, body.channel)
+      logAction(req, 'shrine-move', r.shrine.slug, moveText(r))
       return json(res, 200, { ok: true, shrine: r.shrine })
     }
 

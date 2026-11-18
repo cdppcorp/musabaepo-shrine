@@ -404,6 +404,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   if (read && config.allowIndexing && config.publicOrigin && rel === '/sitemap.xml') {
     return text(res, 200, sitemap(), 'application/xml; charset=utf-8')
   }
+  // 사당마다 channel(1~3)이 붙어 있습니다. 화면은 자기 채널(넘침 채널이면 1번)의 사당만 그립니다
   if (method === 'GET' && rel === '/api/world') {
     const chat = { free: config.freeChat, max: CHAT_MAX, postMax: POST_MAX, contact: config.contactEmail }
     // 게시판에 꽂힌 쪽지 색을 그리려고 최근 글 주제만 함께 보냅니다

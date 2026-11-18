@@ -5,7 +5,7 @@
 import { isIP } from 'node:net'
 import { db } from './db.ts'
 import { daysSince, kstDate, kstWeekDays } from './util.ts'
-import { PLOTS } from './world.ts'
+import { CHANNELS, PLOTS, isChannel } from './world.ts'
 
 export const PRAYER_KEYS = ['deploy', 'security', 'success', 'bug', 'payment', 'uptime'] as const
 export type PrayerKey = (typeof PRAYER_KEYS)[number]
@@ -36,6 +36,9 @@ export interface Shrine {
   /** public/img/shrines/ 아래 파일 이름. 첫 장이 모니터에 뜹니다. */
   screens: string[]
   capturedAt: string
+  /** 사당이 서 있는 채널 (1~3). 사당은 이 채널에서만 보입니다 */
+  channel: number
+  /** 자리 번호 (0~19). 채널마다 자리 20칸이 따로 있습니다 */
   plot: number
   /** 사당 지붕 위 소개 (공백 포함 8글자) */
   sign: string
@@ -151,8 +154,31 @@ export function validateShrine(s: Shrine): string[] {
   // 올린 이미지는 up/<무작위 이름> (DATA_DIR/uploads). 등록소 사당과 운영자 화면에서 넣는 사당이 씁니다
   const okScreen = (f: string) => SCREEN_RE.test(f) || UPLOAD_SCREEN_RE.test(f)
   if (s.screens.length < (s.projectId ? 0 : 1) || s.screens.length > 3 || s.screens.some(f => !okScreen(f))) e.push('실제 화면 1~3장')
+  if (!isChannel(s.channel)) e.push(`채널 (1~${CHANNELS})`)
   if (!Number.isInteger(s.plot) || !PLOTS[s.plot]) e.push('자리 번호')
   return e
+}
+
+/* ── 채널별 자리 ── */
+
+/** 그 채널에 사당이 서 있는 자리 번호들 (규칙에 어긋나 맵에서 숨긴 사당의 자리도 찬 것으로 봅니다) */
+export function takenPlots(channel: number): Set<number> {
+  return new Set((db.prepare('SELECT plot FROM shrines WHERE channel = ?').all(channel) as unknown as { plot: number }[]).map(r => r.plot))
+}
+
+export const plotTaken = (channel: number, plot: number) => !!db.prepare('SELECT 1 FROM shrines WHERE channel = ? AND plot = ?').get(channel, plot)
+
+/** 그 채널의 빈 자리 번호 (작은 번호부터) */
+export function freePlotsIn(channel: number): number[] {
+  const used = takenPlots(channel)
+  return PLOTS.map(p => p.id).filter(id => !used.has(id))
+}
+
+/** 채널 번호 → 빈 자리 번호들 (1~3번 모두) */
+export function freePlotsByChannel(): Record<number, number[]> {
+  const out: Record<number, number[]> = {}
+  for (let ch = 1; ch <= CHANNELS; ch++) out[ch] = freePlotsIn(ch)
+  return out
 }
 
 /* ── 처음 띄울 때 넣는 자리: 없음 (빈 맵으로 시작) ──
@@ -161,15 +187,15 @@ const SEED: Shrine[] = []
 
 const insertStmt = db.prepare(`
   INSERT INTO shrines (slug, name, tagline, category, domain, url, operator, keeper, paid, verified_domain,
-    verified_business, joined_at, status, prayer, charm, deco, screens, captured_at, plot, repo, email, email_public, project_id, sign)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    verified_business, joined_at, status, prayer, charm, deco, screens, captured_at, channel, plot, repo, email, email_public, project_id, sign)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 
 export function insertShrine(s: Shrine) {
   const errors = validateShrine(s)
   if (errors.length) throw new Error(`입점 규칙에 맞지 않습니다: ${errors.join(' / ')}`)
   insertStmt.run(s.slug, s.name, s.tagline, s.category, s.domain, s.url, s.operator, s.keeper ? 1 : 0, s.paid ? 1 : 0,
     s.verifiedDomain, s.verifiedBusiness, s.joinedAt, s.status, s.prayer, s.charm, JSON.stringify(s.deco),
-    JSON.stringify(s.screens), s.capturedAt, s.plot, s.repo, s.email, s.emailPublic ? 1 : 0, s.projectId, s.sign ?? '')
+    JSON.stringify(s.screens), s.capturedAt, s.channel, s.plot, s.repo, s.email, s.emailPublic ? 1 : 0, s.projectId, s.sign ?? '')
   shrineCache = null
 }
 
@@ -182,7 +208,7 @@ export interface ShrineRow {
   slug: string; name: string; tagline: string; category: string; domain: string; url: string; operator: string
   keeper: number; paid: number; verified_domain: string; verified_business: string | null; joined_at: string
   status: 'live' | 'check'; prayer: PrayerKey; charm: string | null; deco: string; screens: string
-  captured_at: string; plot: number; repo: string; email: string; email_public: number; project_id: number; sign: string
+  captured_at: string; channel: number; plot: number; repo: string; email: string; email_public: number; project_id: number; sign: string
 }
 
 export function fromRow(r: ShrineRow): Shrine {
@@ -198,7 +224,7 @@ export function fromRow(r: ShrineRow): Shrine {
     slug: r.slug, name: r.name, tagline: r.tagline, category: r.category, domain: r.domain, url: r.url,
     operator: r.operator, keeper: r.keeper === 1, paid: r.paid === 1, verifiedDomain: r.verified_domain,
     verifiedBusiness: r.verified_business, joinedAt: r.joined_at, status: r.status, prayer: r.prayer,
-    charm: r.charm, deco: list(r.deco), screens: list(r.screens), capturedAt: r.captured_at, plot: r.plot,
+    charm: r.charm, deco: list(r.deco), screens: list(r.screens), capturedAt: r.captured_at, channel: r.channel ?? 1, plot: r.plot,
     repo: r.repo ?? '', email: r.email ?? '', emailPublic: r.email_public === 1, projectId: r.project_id ?? 0,
     sign: r.sign ?? '',
   }
@@ -213,7 +239,7 @@ const warned = new Set<string>()
 /** 규칙을 통과한 사당만. 어긋난 사당은 로그에 이유를 남기고 맵에서 뺍니다. */
 export function allShrines(): Shrine[] {
   if (shrineCache && Date.now() - shrineCacheAt < SHRINE_CACHE_MS) return shrineCache
-  const rows = db.prepare('SELECT * FROM shrines ORDER BY plot').all() as unknown as ShrineRow[]
+  const rows = db.prepare('SELECT * FROM shrines ORDER BY channel, plot').all() as unknown as ShrineRow[]
   shrineCache = rows.map(fromRow).filter(s => {
     const errors = validateShrine(s)
     const why = `${s.slug}: ${errors.join(' / ')}`
@@ -228,11 +254,14 @@ export function allShrines(): Shrine[] {
 }
 
 export const findShrine = (slug: string) => allShrines().find(s => s.slug === slug)
+/** 그 채널(1~3)에 서 있는 사당만 */
+export const shrinesIn = (channel: number) => allShrines().filter(s => s.channel === channel)
 export const clearShrineCache = () => { shrineCache = null }
 
 /**
  * 화면으로 내려보내는 모양. 대표 링크(url)와 결제 여부는 보내지 않습니다 (서비스 가보기는 /go 경유, 저장소는 /go/<slug>/repo).
  * repo는 GitHub 저장소 주소('' = 없음), email은 작성자가 공개를 고른 경우에만 넣습니다.
+ * channel은 사당이 보이는 채널입니다. 화면은 자기 채널(넘침 채널이면 1번)의 사당만 그립니다.
  */
 export function publicShrine(s: Shrine) {
   return {
@@ -240,7 +269,7 @@ export function publicShrine(s: Shrine) {
     slug: s.slug, name: s.name, tagline: s.tagline, category: s.category, domain: s.domain, operator: s.operator,
     keeper: s.keeper, business: !!s.verifiedBusiness, verifiedDomain: s.verifiedDomain,
     verifiedBusiness: s.verifiedBusiness, joinedAt: s.joinedAt, status: s.status, prayer: s.prayer,
-    charm: s.charm, deco: s.deco, screens: s.screens, capturedAt: s.capturedAt, plot: s.plot,
+    charm: s.charm, deco: s.deco, screens: s.screens, capturedAt: s.capturedAt, channel: s.channel, plot: s.plot,
     isNew: daysSince(s.joinedAt) >= 0 && daysSince(s.joinedAt) < 7,
   }
 }

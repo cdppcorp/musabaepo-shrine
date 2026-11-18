@@ -1,6 +1,7 @@
 // 실시간: 같은 채널(최대 20명) 사람들이 서로 걷는 모습을 봅니다 (N1).
 // 위치는 화면이 보내고 서버가 검사합니다(속도 · 벽). 초 켜기는 사당 앞에 있을 때만 받습니다.
-// 채널은 1~3번이 늘 있고, 1번에는 NPC 방문자 6명, 2번에는 3~10명이 거닙니다 (npc.ts).
+// 사당은 채널마다 따로 섭니다(shrines.channel). 초는 내 채널에 있는 사당에만 켤 수 있습니다 (넘침 채널은 1번 채널 사당, world.ts shrineChannelOf).
+// 채널은 1~3번이 늘 있고, 1번에는 NPC 방문자 3명, 2번에는 2명이 거닙니다 (npc.ts).
 // NPC도 채널 인원에 셉니다(n/20명). 실제 사람이 들어오면 NPC가 자리를 비켜 주므로 사람 정원은 그대로 20명입니다.
 //
 // 안정성: 메시지 하나를 처리하다 예외가 나도(DB 쓰기 실패 등) 그 메시지만 버리고 로그를 남깁니다. 서버는 계속 돕니다.
@@ -23,12 +24,15 @@ import {
   refreshBlocks, rememberVisitor, type BlockView, type ChatLine, type ReportTarget,
 } from './moderation.ts'
 import { NpcWorld, npcSnapshot } from './npc.ts'
-import { AI_SHRINES, blocked, BUBBLE_COUNT, EMOTES, MAP_H, MAP_W, near, nearBox, PLOTS, REACH_SERVER, SEATS, SIGH_COUNT, SMOKE_ZONE, SPAWN, SPEED, TREND_FRONT, TREND_RECT } from './world.ts'
+import {
+  AI_SHRINES, blocked, BUBBLE_COUNT, CHANNELS, EMOTES, MAP_H, MAP_W, near, nearBox, PLOTS, REACH_SERVER, SEATS, SIGH_COUNT, SMOKE_ZONE,
+  SPAWN, SPEED, TREND_FRONT, TREND_RECT, shrineChannelOf,
+} from './world.ts'
 
 /** 채널당 실제 접속자 수 (NPC는 세지 않음) */
 const CHANNEL_MAX = 20
-/** 채널은 1~3번만. 모두 차면 더 받지 않습니다 */
-const FIXED_CHANNELS = 3
+/** 채널은 1~3번만 (world.ts CHANNELS, 채널마다 사당 자리가 따로). 모두 차면 더 받지 않습니다 */
+const FIXED_CHANNELS = CHANNELS
 const CAPACITY = CHANNEL_MAX * FIXED_CHANNELS
 const MAX_CONNECTIONS = 900
 /** IP당 새 연결 시도: 1분에 30번 (동시 연결 수는 config.wsMaxPerIp) */
@@ -541,6 +545,8 @@ function onEmote(p: Player, m: Record<string, unknown>) {
 function onLight(p: Player, m: Record<string, unknown>) {
   const slug = typeof m.s === 'string' ? m.s.slice(0, 40) : ''
   const shrine = findShrine(slug)
+  // 다른 채널의 사당은 이 채널에 없는 것과 같습니다 (사당은 자기 채널에서만 보임)
+  if (shrine && shrine.channel !== shrineChannelOf(p.channel.id)) return send(p, { t: 'lit', s: slug, ok: false, reason: 'channel' })
   if (!shrine || shrine.status !== 'live') return send(p, { t: 'lit', s: slug, ok: false, reason: 'closed' })
   if (!isPrayerKey(m.p)) return send(p, { t: 'lit', s: slug, ok: false, reason: 'prayer' })
   const prayer = m.p

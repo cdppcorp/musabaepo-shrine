@@ -7,3 +7,8 @@ data
 # 운영 백업(개인정보 포함): 절대 커밋하지 않음
 backups/
 deploy/backups/
+
+# Python 서버
+app/.venv/
+__pycache__/
+.pytest_cache/

@@ -1,23 +1,24 @@
-// NPC 방문자: 채널 1에는 늘 6명, 채널 2에는 3~10명이 거닐게 합니다. 화면에는 다른 방문객과 똑같이 보입니다(스냅샷의 npc: true는 인원 계산용).
+// NPC 방문자: 채널 1에는 늘 3명, 채널 2에는 늘 2명이 거닐게 합니다. 화면에는 다른 방문객과 똑같이 보입니다(스냅샷의 npc: true는 인원 계산용).
 // NPC는 데이터를 남기지 않습니다 — 초 · AI 기도 · 게시판 · 직접 쓴 말 없이, 걷기 · 앉기 · 고른 말풍선 · 행동만 합니다.
+// 사당 구경은 자기 채널에 서 있는 사당만 갑니다 (사당은 채널마다 따로).
 // 서버가 직접 움직이며(길 찾기는 목적지가 바뀔 때만), 실제 사람과 같은 모양의 메시지(join · st · sit · say · emo · leave)를 보냅니다.
 // 채널 정원(30명)에는 세지 않습니다.
 import { randomBytes } from 'node:crypto'
 import { makeNick } from './security.ts'
-import { allShrines } from './shrines.ts'
+import { shrinesIn } from './shrines.ts'
 import {
   AI_SHRINES, BUBBLE_COUNT, FORTUNE, LOOK_SIZES, MAP_H, MAP_W, PLOTS, REGISTRY_FRONT, SEATS, SIGH_COUNT, SMOKE_FRONT,
-  SPAWN, SPEED, TEMPLE_FRONT, TREND_FRONT, blocked, type Point,
+  SPAWN, SPEED, TEMPLE_FRONT, TREND_FRONT, blocked, shrineChannelOf, type Point,
 } from './world.ts'
 
 /** NPC가 사는 채널과 머릿수 범위 */
 export const NPC_CHANNELS = [1, 2] as const
-/** 채널별 NPC 수 [최소, 최대]. 채널 1은 늘 6명, 채널 2는 3~10명 사이에서 천천히 오르내림 */
-const NPC_RANGE: Record<number, readonly [number, number]> = { 1: [6, 6], 2: [3, 10] }
+/** 채널별 NPC 수 [최소, 최대]. 채널 1은 늘 3명, 채널 2는 늘 2명 */
+const NPC_RANGE: Record<number, readonly [number, number]> = { 1: [3, 3], 2: [2, 2] }
 const rangeOf = (id: number) => NPC_RANGE[id] ?? [3, 10]
 /** 걷는 속도: 사람보다 조금 느긋하게 */
 /** 천천히 거닐 듯 (플레이어보다 한참 느리게) */
-const NPC_SPEED = SPEED * 0.6
+const NPC_SPEED = SPEED * 0.5
 /** 한 채널에서 NPC 말풍선 사이 최소 간격 */
 const NPC_SAY_GAP = 20_000
 /** 입구 문 바로 안쪽: 여기로 들어오고 여기로 나갑니다 */
@@ -315,7 +316,8 @@ export class NpcWorld {
 
   /** 다음 목적지 고르기 */
   private chooseGoal(ch: NpcChannel): Goal {
-    const live = allShrines().filter(s => s.status === 'live').map(s => PLOTS[s.plot]?.front).filter((p): p is Point => !!p)
+    // 이 채널에 서 있는 사당만 (다른 채널 사당 자리는 이 채널에서 빈 자리입니다)
+    const live = shrinesIn(shrineChannelOf(ch.id)).filter(s => s.status === 'live').map(s => PLOTS[s.plot]?.front).filter((p): p is Point => !!p)
     const freeSeats = SEATS.filter(s => !this.seatTaken(ch.id, s.id) && !this.host.seatTaken(ch.id, s.id))
     const fortune = { x: FORTUNE.x + FORTUNE.w + 9, y: FORTUNE.y + FORTUNE.h - 2 }
     const roll = Math.random()
@@ -345,7 +347,7 @@ export class NpcWorld {
       return
     }
     n.state = 'idle'
-    n.until = now + rand(8000, 20_000)
+    n.until = now + rand(12_000, 30_000)
     switch (g?.kind) {
       case 'seat': {
         const seat = g.seat != null ? SEATS[g.seat] : undefined
@@ -355,7 +357,7 @@ export class NpcWorld {
           n.y = seat.y
           n.d = seat.d
           n.state = 'sit'
-          n.until = now + rand(30_000, 90_000)
+          n.until = now + rand(45_000, 120_000)
           n.dirty = false
           this.host.send(ch.id, { t: 'sit', id: n.id, s: seat.id, x: n.x, y: n.y, d: n.d })
         }
@@ -365,13 +367,13 @@ export class NpcWorld {
       case 'ai':
       case 'temple':
         n.d = 1
-        if (Math.random() < 0.6) this.emote(ch, n, 'bow', now)
-        n.until = now + rand(8000, 18_000)
+        if (Math.random() < 0.4) this.emote(ch, n, 'bow', now)
+        n.until = now + rand(12_000, 28_000)
         break
       case 'trend':
       case 'registry':
         n.d = 1
-        n.until = now + rand(10_000, 22_000)
+        n.until = now + rand(15_000, 32_000)
         break
       case 'smoke':
         n.d = pick([0, 2, 3]) ?? 0
@@ -381,12 +383,12 @@ export class NpcWorld {
           this.host.send(ch.id, { t: 'emo', id: n.id, k: 'smoke', i: randInt(0, SIGH_COUNT - 1) })
         } else this.host.send(ch.id, { t: 'emo', id: n.id, k: 'smoke' })
         n.nextChatter = Math.max(n.nextChatter, now + 7000)
-        n.until = now + rand(10_000, 18_000)
+        n.until = now + rand(15_000, 27_000)
         break
       case 'fortune':
         n.d = 2
-        if (Math.random() < 0.5) this.emote(ch, n, 'wave', now)
-        n.until = now + rand(5000, 10_000)
+        if (Math.random() < 0.35) this.emote(ch, n, 'wave', now)
+        n.until = now + rand(8000, 16_000)
         break
     }
   }
@@ -405,10 +407,10 @@ export class NpcWorld {
     n.nextChatter = Math.max(n.nextChatter, now + 4000)
   }
 
-  /** 가끔(한 사람당 1~2.5분에 한 번) 고른 말풍선을 띄우거나 손을 흔듭니다.
+  /** 가끔(한 사람당 1.5~3.5분에 한 번) 고른 말풍선을 띄우거나 손을 흔듭니다.
    * 말풍선은 채널 전체에서 20초에 한 번까지만 (NPC끼리 떠들어 화면이 시끄럽지 않게) */
   private chatter(ch: NpcChannel, n: Npc, now: number) {
-    n.nextChatter = now + rand(60_000, 150_000)
+    n.nextChatter = now + rand(90_000, 210_000)
     if (Math.random() < 0.35) {
       if (now - ch.lastSay < NPC_SAY_GAP) return
       ch.lastSay = now
@@ -425,7 +427,7 @@ export class NpcWorld {
       if (now >= n.until) {
         this.stand(ch, n)
         n.state = 'idle'
-        n.until = now + rand(4000, 10_000)
+        n.until = now + rand(6000, 15_000)
       }
       return
     }

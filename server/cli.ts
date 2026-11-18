@@ -1,15 +1,17 @@
 // 운영 도구. 운영자가 사당을 손으로 넣고, 등록소 접수를 승인하고, 상태를 바꿀 때 씁니다.
 //
 //   npm run shrine -- list
-//   npm run shrine -- add <사당.json>          (규칙 검사 후 추가. 파일 대신 - 이면 표준 입력에서 읽음)
+//   npm run shrine -- add <사당.json>          (규칙 검사 후 추가. 파일 대신 - 이면 표준 입력에서 읽음. "channel"을 빼면 1번 채널)
 //   npm run shrine -- upload <이미지|->         (사당 이미지를 DATA_DIR/uploads에 넣고 screens에 쓸 이름 up/<…>을 알려 줌)
 //   npm run shrine -- status <slug> live|check (점검중 전환)
 //   npm run shrine -- remove <slug> [사유]      (등록소에서 온 사당이면 그 접수는 반려로)
-//   npm run shrine -- move <slug> <자리>        (다른 빈 자리로 옮기기)
+//   npm run shrine -- move <slug> <자리> [채널]  (다른 빈 자리로 옮기기. 채널을 빼면 지금 채널 안에서)
 //   npm run shrine -- posts                     (AI 트렌드 게시판 글 · 신고 수)
 //   npm run shrine -- post-hide <id> | post-show <id> | post-del <id>
 //   npm run shrine -- projects [all]            (내 프로젝트 등록소 접수: 검토할 것만, all이면 전부)
-//   npm run shrine -- approve <접수번호> [자리]  (빈 자리에 사당 세우기 · 링크 변경 승인)
+//   npm run shrine -- approve <접수번호> [자리|-] [채널]
+//                                               (빈 자리에 사당 세우기 · 링크 변경 승인. 자리를 빼거나 - 이면 자동:
+//                                                작성자가 고른 채널 · 자리, 찼으면 그 채널의 첫 빈 자리. 채널을 빼면 작성자가 고른 채널)
 //   npm run shrine -- reject <접수번호> [사유]   (접수 반려 · 변경 반려)
 //   npm run shrine -- erase <접수번호>           (그 접수의 개인정보를 30일을 기다리지 않고 바로 파기. 되돌릴 수 없음)
 //   npm run shrine -- blocks                    (지금 걸려 있는 차단 · 강퇴)
@@ -17,6 +19,7 @@
 //   npm run shrine -- unblock <번호>            (차단 · 강퇴 풀기)
 //   npm run shrine -- schema                    (DB 구조 버전)
 //
+// 사당은 채널(1~3)마다 따로 서고 자기 채널에서만 보입니다. 채널마다 자리 0~19번이 따로 있습니다.
 // 서버가 떠 있는 동안 바꾸면 30초 안에 맵 정보(/api/world)에 반영됩니다. 이미 들어와 있는 사람은 새로고침해야 보입니다.
 // 차단은 10초 안에 서버에 반영되고, 걸리는 접속자는 그때 끊깁니다.
 // Docker: docker compose exec -T shrine node --disable-warning=ExperimentalWarning server/cli.ts <명령>
@@ -29,9 +32,9 @@ import { destroyProjectNow } from './retention.ts'
 import { allShrines, clearShrineCache, insertShrine, validateShrine, type Shrine } from './shrines.ts'
 import { allPostsForAdmin, deletePost, setPostHidden } from './ai.ts'
 import { approveProject, projectsForAdmin, rejectProject } from './registry.ts'
-import { moveShrine, removeShrine, setShrineStatus } from './ops.ts'
+import { moveShrine, moveText, removeShrine, setShrineStatus } from './ops.ts'
 
-const [cmd, a, b] = process.argv.slice(2)
+const [cmd, a, b, c] = process.argv.slice(2)
 
 function fail(msg: string): never {
   console.error(msg)
@@ -41,7 +44,7 @@ function fail(msg: string): never {
 switch (cmd) {
   case 'list': {
     clearShrineCache()
-    for (const s of allShrines()) console.log(`${String(s.plot).padStart(2)}  ${s.status.padEnd(5)}  ${s.slug.padEnd(20)}  ${s.name}  (${s.domain})`)
+    for (const s of allShrines()) console.log(`채널 ${s.channel} · ${String(s.plot).padStart(2)}  ${s.status.padEnd(5)}  ${s.slug.padEnd(20)}  ${s.name}  (${s.domain})`)
     break
   }
   case 'add': {
@@ -52,12 +55,17 @@ switch (cmd) {
     } catch (e) {
       fail(`사당 JSON을 읽지 못했습니다: ${(e as Error).message}`)
     }
-    // 등록소에서 생긴 칸(저장소 · 이메일 · 접수 번호)은 비워 두면 기본값
-    const s = { repo: '', email: '', emailPublic: false, projectId: 0, ...input } as Shrine
+    // 등록소에서 생긴 칸(저장소 · 이메일 · 접수 번호)은 비워 두면 기본값, 채널을 비우면 1번 채널
+    const s = { repo: '', email: '', emailPublic: false, projectId: 0, channel: 1, ...input } as Shrine
     const errors = validateShrine(s)
     if (errors.length) fail(`규칙에 맞지 않습니다: ${errors.join(' / ')}`)
-    insertShrine(s)
-    console.log(`추가했습니다: ${s.slug} (자리 ${s.plot})`)
+    try {
+      insertShrine(s)
+    } catch (e) {
+      const msg = (e as Error).message
+      fail(/UNIQUE constraint/i.test(msg) ? `같은 주소 · 이름(slug)이나 같은 채널 · 자리를 쓰는 사당이 이미 있습니다 (채널 ${s.channel} · ${s.plot}번)` : msg)
+    }
+    console.log(`추가했습니다: ${s.slug} (채널 ${s.channel} · 자리 ${s.plot})`)
     break
   }
   case 'status': {
@@ -81,10 +89,10 @@ switch (cmd) {
     break
   }
   case 'move': {
-    if (!a || b == null) fail('사용법: npm run shrine -- move <slug> <자리 번호>')
+    if (!a || b == null) fail('사용법: npm run shrine -- move <slug> <자리 번호> [채널 1~3]')
     try {
-      const r = moveShrine(a, b)
-      console.log(`${a}: 자리 ${r.from} → ${r.shrine.plot}`)
+      const r = moveShrine(a, b, c)
+      console.log(r.fromChannel === r.shrine.channel ? `${a}: 자리 ${moveText(r)}` : `${a}: ${moveText(r)}`)
     } catch (e) {
       fail((e as Error).message)
     }
@@ -128,17 +136,21 @@ switch (cmd) {
       const dates = [p.consent_at && `동의 ${day(p.consent_at)}`, p.closed_at && `닫힘 ${day(p.closed_at)}`, p.purged_at && `파기 ${day(p.purged_at)}`].filter(Boolean)
       if (dates.length) console.log(`      ${dates.join('  ')}`)
       console.log(`      이메일: ${p.email} (${p.email_public ? '공개' : '비공개'})  작성: ${p.nick}${p.slug ? `  사당: ${p.slug}` : ''}${p.note ? `  메모: ${p.note}` : ''}`)
-      console.log(`      원하는 자리: ${p.want_plot ?? '아무 데나'}  이미지: ${p.screen ? `data/uploads/${p.screen}` : '-'}${p.pending_screen != null ? `  바꿀 이미지: ${p.pending_screen ? `data/uploads/${p.pending_screen}` : '(지움)'}` : ''}`)
+      const wishCh = p.want_channel ?? (p.want_plot != null ? 1 : null)
+      const wish = `${wishCh == null ? '아무 채널' : `채널 ${wishCh}`} · ${p.want_plot == null ? '아무 자리' : `${p.want_plot}번`}`
+      console.log(`      원하는 자리: ${wish}  이미지: ${p.screen ? `data/uploads/${p.screen}` : '-'}${p.pending_screen != null ? `  바꿀 이미지: ${p.pending_screen ? `data/uploads/${p.pending_screen}` : '(지움)'}` : ''}`)
     }
     break
   }
   case 'approve': {
     const id = Number(a)
-    if (!Number.isInteger(id)) fail('사용법: npm run shrine -- approve <접수번호> [자리 번호]')
-    const plot = b == null ? undefined : Number(b)
-    if (plot != null && !Number.isInteger(plot)) fail('자리 번호는 숫자입니다')
+    if (!Number.isInteger(id)) fail('사용법: npm run shrine -- approve <접수번호> [자리 번호 | -] [채널 1~3]')
+    const plot = b == null || b === '-' || b === '' ? undefined : Number(b)
+    if (plot != null && !Number.isInteger(plot)) fail('자리 번호는 숫자입니다 (자동은 -)')
+    const channel = c == null || c === '' ? undefined : Number(c)
+    if (channel != null && !Number.isInteger(channel)) fail('채널은 1~3입니다')
     try {
-      console.log(approveProject(id, plot))
+      console.log(approveProject(id, plot, channel))
     } catch (e) {
       fail((e as Error).message)
     }
@@ -215,5 +227,5 @@ switch (cmd) {
     break
   }
   default:
-    fail('명령: list | add <json|-> | upload <이미지|-> | status <slug> live|check | remove <slug> [사유] | move <slug> <자리> | posts | post-hide <id> | post-show <id> | post-del <id> | projects [all] | approve <id> [자리] | reject <id> [사유] | erase <id> | blocks | block-ip <IP> <기간> [사유] | unblock <번호> | schema')
+    fail('명령: list | add <json|-> | upload <이미지|-> | status <slug> live|check | remove <slug> [사유] | move <slug> <자리> [채널] | posts | post-hide <id> | post-show <id> | post-del <id> | projects [all] | approve <id> [자리|-] [채널] | reject <id> [사유] | erase <id> | blocks | block-ip <IP> <기간> [사유] | unblock <번호> | schema')
 }

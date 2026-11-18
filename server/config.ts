@@ -199,6 +199,15 @@ if (notifyUrl) {
 
 onOff('GITHUB_CHECK', true)
 int('BACKUP_KEEP', 14, 1, 10_000)
+int('BACKUP_MAX_DAYS', 14, 1, 10_000)
+/** 0 이상의 일 수 (retention.ts가 직접 읽음) */
+for (const name of ['RETENTION_DAYS', 'PENDING_DAYS']) {
+  const raw = get(name)
+  if (raw && !(/^\d+(\.\d+)?$/.test(raw) && Number.isFinite(Number(raw)))) errors.push(`${name}는 0 이상의 숫자(일)입니다. 지금 값: "${raw}"`)
+}
+if (/\s/.test(get('GITHUB_TOKEN'))) errors.push('GITHUB_TOKEN에 빈칸이 들어 있습니다')
+const acmeEmail = get('ACME_EMAIL')
+if (acmeEmail && !/^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(acmeEmail)) errors.push(`ACME_EMAIL이 메일 주소 모양이 아닙니다. 지금 값: "${acmeEmail}"`)
 
 export const config = {
   port,

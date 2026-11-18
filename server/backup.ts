@@ -2,17 +2,22 @@
 //   · SQLite는 온라인 백업 API(node:sqlite backup)로 한 시점의 사본을 뜹니다. WAL 모드라 서버가 도는 중에 떠도 안전합니다.
 //     (db 파일만 복사하면 -wal에 있는 최근 쓰기가 빠지거나 사본이 깨질 수 있습니다)
 //   · 백업 하나는 tar 파일 하나입니다: shrine.db + uploads/(등록소 이미지) + manifest.json(표별 행 수 · 이미지 수)
-//   · BACKUP_DIR에 shrine-YYYYMMDD-HHMMSSZ.tar(UTC) 이름으로 두고, 최근 BACKUP_KEEP개만 남깁니다.
+//   · BACKUP_DIR에 shrine-YYYYMMDD-HHMMSSZ.tar(UTC) 이름으로 둡니다. 만들 때마다 오래된 것을 지웁니다 (먼저 걸리는 쪽):
+//       - 최근 BACKUP_KEEP개(기본 14)까지만
+//       - 만든 지 BACKUP_MAX_DAYS - 1일(기본 13일)이 지난 것. 매일 돌리면 어떤 백업도 BACKUP_MAX_DAYS일(기본 14일)을
+//         넘겨 남지 않습니다. 개인정보 처리방침에 적은 보관 기간이므로 늘리려면 처리방침도 같이 고칩니다.
+//       - 앱이 DB 구조를 바꾸기 전에 뜬 사본(DATA_DIR/pre-migrate/, db.ts)도 같은 기한으로 지웁니다.
 //   · 백업에는 이메일 같은 개인정보가 들어 있어서 파일은 만든 사용자만 읽을 수 있게(600) 만듭니다.
 //
 //   npm run backup                           지금 백업 하나 만들기
-//   npm run backup -- list                   백업 목록
+//   npm run backup -- list                   백업 목록 (만든 때 · 지난 날수)
+//   npm run backup -- prune                  만들지 않고 정리만
 //   npm run backup -- verify <파일>           백업 검사: DB 무결성, 표별 행 수 · 이미지 수를 manifest와 맞춰 봄
 //   npm run backup -- restore <파일> [폴더]   백업을 폴더(기본 DATA_DIR)에 되살림. 서버를 멈춘 뒤에만 씁니다.
 //                                            원래 있던 DB · 이미지는 지우지 않고 그 폴더의 pre-restore-<시각>/으로 옮깁니다.
 //
 // Docker: docker compose exec -T shrine node --disable-warning=ExperimentalWarning server/backup.ts [명령]
-// 설정: DATA_DIR(기본 ./data, config.ts와 같음) · BACKUP_DIR(기본 ./backups) · BACKUP_KEEP(기본 14)
+// 설정: DATA_DIR(기본 ./data, config.ts와 같음) · BACKUP_DIR(기본 ./backups) · BACKUP_KEEP(기본 14) · BACKUP_MAX_DAYS(기본 14)
 // config.ts · db.ts는 불러오지 않습니다. 운영 설정이 비어 있거나 DB가 깨졌을 때도 백업 · 복구는 돌아야 해서입니다.
 import { createHash } from 'node:crypto'
 import {
@@ -36,23 +41,32 @@ const DISK_RESERVE = 256 * 1024 * 1024
 /** 중간에 멈춘 백업이 남긴 임시 파일을 지우기까지 */
 const STALE_MS = 6 * 3600_000
 const BLOCK = 512
+const DAY_MS = 24 * 3600_000
 
 export class BackupError extends Error {}
 
 export interface BackupSettings {
   dataDir: string
   backupDir: string
+  /** 최근 몇 개까지 */
   keep: number
+  /** 어떤 백업도 이 날수를 넘겨 남기지 않음 (매일 돌린다는 전제로 하루 일찍 지움) */
+  maxDays: number
+}
+
+function positiveInt(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim()
+  const n = raw ? Number(raw) : fallback
+  if (!Number.isSafeInteger(n) || n < 1) throw new BackupError(`${name}는 1 이상의 정수여야 합니다`)
+  return n
 }
 
 export function backupSettings(): BackupSettings {
-  const keepRaw = process.env.BACKUP_KEEP?.trim()
-  const keep = keepRaw ? Number(keepRaw) : 14
-  if (!Number.isSafeInteger(keep) || keep < 1) throw new BackupError('BACKUP_KEEP는 1 이상의 정수여야 합니다')
   return {
     dataDir: resolve(process.env.DATA_DIR ?? './data'),
     backupDir: resolve(process.env.BACKUP_DIR?.trim() || './backups'),
-    keep,
+    keep: positiveInt('BACKUP_KEEP', 14),
+    maxDays: positiveInt('BACKUP_MAX_DAYS', 14),
   }
 }
 
@@ -397,8 +411,15 @@ function cleanStale(dir: string) {
   }
 }
 
+/** 백업을 만든 때 (파일 이름의 UTC 시각. 복사하면 바뀌는 mtime 대신 씁니다) */
+function createdMsOf(name: string): number {
+  const m = NAME_RE.exec(name)?.[1] ?? ''
+  const t = Date.UTC(+m.slice(0, 4), +m.slice(4, 6) - 1, +m.slice(6, 8), +m.slice(9, 11), +m.slice(11, 13), +m.slice(13, 15))
+  return Number.isFinite(t) ? t : 0
+}
+
 /** 이 도구가 만든 백업 파일, 새것부터 */
-export function listBackups(dir = backupSettings().backupDir): { name: string; path: string; bytes: number; mtimeMs: number }[] {
+export function listBackups(dir = backupSettings().backupDir): { name: string; path: string; bytes: number; createdMs: number }[] {
   if (!existsSync(dir)) return []
   const key = (n: string) => {
     const m = NAME_RE.exec(n)
@@ -409,9 +430,37 @@ export function listBackups(dir = backupSettings().backupDir): { name: string; p
     .sort((a, b) => (key(a) < key(b) ? 1 : key(a) > key(b) ? -1 : 0))
     .map(name => {
       const path = join(dir, name)
-      const st = statSync(path)
-      return { name, path, bytes: st.size, mtimeMs: st.mtimeMs }
+      return { name, path, bytes: statSync(path).size, createdMs: createdMsOf(name) }
     })
+}
+
+/**
+ * 오래된 백업 지우기: 최근 keep개 밖이거나, 만든 지 maxDays - 1일이 지난 것.
+ * 하루 일찍 지우는 까닭: 매일 같은 시각에 돌면 13일 23시간짜리는 남고 다음 날 지워지므로, 어떤 백업도 maxDays일을 넘지 않습니다.
+ * protect(방금 만든 파일)는 지우지 않습니다.
+ */
+export function pruneBackups(s: BackupSettings = backupSettings(), protect = ''): string[] {
+  const cutoff = Date.now() - (s.maxDays - 1) * DAY_MS
+  const removed: string[] = []
+  listBackups(s.backupDir).forEach((b, i) => {
+    if (b.path === protect) return
+    if (i < s.keep && b.createdMs >= cutoff) return
+    unlinkSync(b.path)
+    removed.push(b.name)
+  })
+  // DB 구조를 바꾸기 전 사본(db.ts)도 개인정보가 든 DB 전체 사본이라 같은 기한을 지킵니다
+  const pre = join(s.dataDir, 'pre-migrate')
+  if (existsSync(pre)) {
+    for (const n of readdirSync(pre)) {
+      if (!/^shrine-.*\.db$/.test(n)) continue
+      try {
+        if (statSync(join(pre, n)).mtimeMs >= cutoff) continue
+        rmSync(join(pre, n), { force: true })
+        removed.push(`pre-migrate/${n}`)
+      } catch { /* 권한이 없으면 다음 실행 때 */ }
+    }
+  }
+  return removed
 }
 
 /* ── 백업 만들기 ── */
@@ -433,6 +482,8 @@ export async function createBackup(opts: Partial<BackupSettings> = {}): Promise<
   if (isInside(s.backupDir, uploadsDir)) throw new BackupError('BACKUP_DIR을 이미지 폴더(uploads) 안에 둘 수 없습니다')
   ensureWritableDir(s.backupDir)
   cleanStale(s.backupDir)
+  // 기한이 지난 백업은 이번 백업이 실패하더라도 먼저 지웁니다 (보관 기간 약속 · 디스크 여유)
+  const removed = pruneBackups(s)
 
   // 디스크 여유: DB 임시 사본 + tar(DB + 이미지)를 쓰고도 DISK_RESERVE가 남아야 합니다
   const dbBytes = statSync(dbPath).size + (existsSync(`${dbPath}-wal`) ? statSync(`${dbPath}-wal`).size : 0)
@@ -508,13 +559,8 @@ export async function createBackup(opts: Partial<BackupSettings> = {}): Promise<
       try { fsyncSync(dfd) } finally { closeSync(dfd) }
     } catch { /* 폴더 fsync가 안 되는 곳(Windows) */ }
 
-    // 3) 오래된 백업 정리: 새것부터 keep개만
-    const removed: string[] = []
-    for (const old of listBackups(s.backupDir).slice(s.keep)) {
-      if (old.path === final) continue
-      unlinkSync(old.path)
-      removed.push(old.name)
-    }
+    // 3) 새것까지 넣어 다시 정리 (keep개 넘친 것)
+    removed.push(...pruneBackups(s, final))
     return { file: final, bytes: statSync(final).size, tables, uploads, uploadBytes: packedBytes, removed }
   } catch (e) {
     tar?.abort()
@@ -610,6 +656,7 @@ export function restoreBackup(file: string, target = backupSettings().dataDir): 
 const USAGE = `사용법:
   npm run backup                          지금 백업 하나 만들기
   npm run backup -- list                  백업 목록
+  npm run backup -- prune                 만들지 않고 오래된 백업만 정리
   npm run backup -- verify <파일>          백업 검사
   npm run backup -- restore <파일> [폴더]  되살리기 (기본 DATA_DIR, 서버를 멈춘 뒤에만)
 Docker: docker compose exec -T shrine node --disable-warning=ExperimentalWarning server/backup.ts [명령]`
@@ -624,14 +671,23 @@ if (import.meta.main) {
         console.log(`[backup] 만들었습니다: ${r.file} (${size(r.bytes)})`)
         console.log(`  표: ${tableLine(r.tables)}`)
         console.log(`  이미지 ${r.uploads}개 (${size(r.uploadBytes)})`)
-        if (r.removed.length) console.log(`  오래된 백업 ${r.removed.length}개를 지웠습니다 (최근 ${s.keep}개 보관): ${r.removed.join(', ')}`)
+        if (r.removed.length) console.log(`  오래된 백업 ${r.removed.length}개를 지웠습니다 (최근 ${s.keep}개 · ${s.maxDays}일 안): ${r.removed.join(', ')}`)
         break
       }
       case 'list': {
         const s = backupSettings()
         const list = listBackups(s.backupDir)
         if (!list.length) console.log(`(백업 없음: ${s.backupDir})`)
-        for (const b of list) console.log(`${b.name}  ${size(b.bytes).padStart(8)}  ${new Date(b.mtimeMs).toISOString()}`)
+        for (const b of list) {
+          const days = ((Date.now() - b.createdMs) / DAY_MS).toFixed(1)
+          console.log(`${b.name}  ${size(b.bytes).padStart(8)}  ${days}일 전`)
+        }
+        break
+      }
+      case 'prune': {
+        const s = backupSettings()
+        const removed = pruneBackups(s)
+        console.log(removed.length ? `[backup] ${removed.length}개를 지웠습니다: ${removed.join(', ')}` : '[backup] 지울 백업이 없습니다')
         break
       }
       case 'verify': {

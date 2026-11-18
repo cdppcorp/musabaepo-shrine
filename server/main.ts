@@ -18,6 +18,7 @@ import { handleUpgrade, startRealtime, stopRealtime } from './realtime.ts'
 import { cleanupUploads } from './uploads.ts'
 import { allShrines, seedShrines } from './shrines.ts'
 import { notify } from './notify.ts'
+import { startRetention } from './retention.ts'
 
 /** 끝내기 전체 제한 시간 (Docker stop 기본 유예 10초 안) */
 const SHUTDOWN_MS = 8_000
@@ -27,7 +28,8 @@ const HTTP_DRAIN_MS = 2_000
 seedShrines()
 allShrines()
 
-const server = createServer({ requestTimeout: 15_000, headersTimeout: 10_000 }, (req, res) => {
+// 요청 전체 60초(느린 모바일에서 10MB 이미지 올리기), 헤더는 10초 안에 (느린 헤더 공격은 그대로 막음)
+const server = createServer({ requestTimeout: 60_000, headersTimeout: 10_000 }, (req, res) => {
   handleRequest(req, res).catch(err => {
     console.error('[shrine] 요청 처리 실패', err)
     try {
@@ -139,3 +141,5 @@ const runCleanup = () => {
 }
 runCleanup()
 setInterval(runCleanup, 6 * 3600_000).unref()
+// 개인정보 보관 기간 정리 (시작할 때 · 하루마다, retention.ts)
+startRetention()

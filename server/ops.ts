@@ -251,8 +251,10 @@ export function removeShrine(slug: unknown, noteRaw: unknown = ''): Shrine {
   tx(() => {
     db.prepare('DELETE FROM shrines WHERE slug = ?').run(cur.slug)
     if (cur.projectId) {
-      db.prepare(`UPDATE projects SET status = 'rejected', pending_github = NULL, pending_url = NULL, pending_screen = NULL, note = ?
-                  WHERE id = ? AND status = 'approved'`).run(`removed${why ? `: ${why}` : ''}`, cur.projectId)
+      // 반려로 바꾸고 검토 대기 값은 버립니다. closed_at부터 30일 뒤 retention.ts가 개인정보를 파기합니다
+      db.prepare(`UPDATE projects SET status = 'rejected', pending_github = NULL, pending_url = NULL, pending_screen = NULL,
+                    pending_name = NULL, pending_tagline = NULL, pending_sign = NULL, review_at = NULL, closed_at = ?, note = ?
+                  WHERE id = ? AND status = 'approved'`).run(Date.now(), `removed${why ? `: ${why}` : ''}`, cur.projectId)
     }
   })
   clearShrineCache()

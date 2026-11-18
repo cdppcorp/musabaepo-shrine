@@ -344,7 +344,10 @@ function securityTxt(): string {
 
 const startedAt = Date.now()
 
-/** GET /healthz: DB가 답하고 업로드 폴더가 보이면 200, 아니면 503. 요청 제한에서 빼고 캐시하지 않습니다 */
+/**
+ * GET /healthz: DB가 답하면 200, 아니면 503. 업로드 폴더 상태는 참고로만 붙입니다 (다시 띄워도 낫지 않으므로 503으로 만들지 않음).
+ * 요청 제한에서 빼고 캐시하지 않습니다.
+ */
 async function healthz(req: IncomingMessage, res: ServerResponse) {
   let ok = true
   let dbOk = true
@@ -360,7 +363,7 @@ async function healthz(req: IncomingMessage, res: ServerResponse) {
     db: dbOk ? 'ok' : 'fail',
     uptime: Math.round((Date.now() - startedAt) / 1000),
     shrines: dbOk ? allShrines().length : null,
-    uploads: { usedPct: up.usedPct, lowDisk: up.lowDisk },
+    uploads: { usedPct: up.usedPct, lowDisk: up.lowDisk, writable: up.writable },
   }
   res.writeHead(ok ? 200 : 503, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex' })
   res.end(req.method === 'HEAD' ? undefined : JSON.stringify(body))

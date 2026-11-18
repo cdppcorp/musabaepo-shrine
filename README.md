@@ -40,16 +40,25 @@ npm run check        # 서버 타입 검사
 | `TICKET_SECRET` | 입장 표 서명 키 (긴 무작위 문자열) |
 | `TURNSTILE_SITE_KEY` · `TURNSTILE_SECRET` | Cloudflare Turnstile 사람 확인 키 |
 | `BASE_PATH` | 비워 두면 도메인 루트(`/`)에서 동작 |
-| `CONTACT_EMAIL` | (선택) 화면에 보여 줄 문의 주소 |
+| `CONTACT_EMAIL` | 화면 · 처리방침에 보여 줄 문의 주소 (운영에서는 필수) |
 | `FREE_CHAT` | `off`면 직접 채팅을 끄고 정해진 말만 |
 | `GITHUB_CHECK` | `off`면 등록소의 GitHub 공개 저장소 확인을 끔 |
 | `CANDLE_COOLDOWN_MS` | 같은 사당 초 켜기 간격 (기본 30분) |
+| `ADMIN_PASSWORD` · `ADMIN_IPS` | 운영자 화면(`/admin`) 비밀번호(16자 이상)와 허용 IP. 비워 두면 운영자 화면이 꺼집니다 |
+| `NOTIFY_WEBHOOK_URL` | (선택) 새 접수 · 신고 · 장애를 알릴 웹훅 주소 (https) |
+| `BOARD_OPEN` | `on`이면 AI 트렌드 게시판 글쓰기를 엽니다 (기본 off, 준비 중) |
+| `WS_MAX_PER_IP` | IP당 동시 연결 수 (기본 12) |
+| `RETENTION_DAYS` · `PENDING_DAYS` | 반려 · 내린 접수를 파기하기까지 날 수(기본 30), 검토 대기를 자동 반려하기까지 날 수(기본 90) |
+| `BACKUP_KEEP` · `BACKUP_MAX_DAYS` | 백업을 남길 개수(기본 14)와 최대 보관 날 수(기본 14) |
+| `GITHUB_TOKEN` | (선택) GitHub 저장소 확인에 쓸 토큰 (요청 한도를 늘림) |
+
+설정값이 틀리면 서버가 문제를 한국어로 모아 보여 주고 시작하지 않습니다. 운영(`NODE_ENV=production`)에서는 예시 값 · 짧은 비밀값 · 시험용 Turnstile 키도 거부합니다.
 
 ## 배포 (Docker, 독립 도메인)
 
 1. Docker가 설치된 서버를 준비하고, 도메인의 DNS A 레코드를 서버 IP로 겁니다.
 2. Cloudflare Turnstile에서 그 도메인용 키를 발급합니다.
-3. `.env`를 채웁니다 (`BASE_PATH`는 비워 둡니다).
+3. `.env`를 채웁니다 (`BASE_PATH`는 비워 둡니다. 인증서용 `ACME_EMAIL`도 넣습니다).
 4. 띄웁니다:
    ```bash
    cd deploy
@@ -59,6 +68,7 @@ npm run check        # 서버 타입 검사
 
 데이터는 `shrine-data` 볼륨 하나에 있습니다. 서버를 옮길 때는 저장소 · `.env` · 볼륨을 옮기고 DNS만 바꿉니다.
 채널 정보가 프로세스 메모리에 있어서 앱은 한 개만 띄웁니다.
+백업 · 복구 · 장애 대응 순서는 [deploy/README.md](deploy/README.md)에 있습니다 (`npm run backup`).
 
 ## 운영 도구
 
@@ -71,6 +81,9 @@ npm run shrine -- posts                   # AI 트렌드 게시판 글 · 신고
 npm run shrine -- post-hide <번호> | post-show <번호> | post-del <번호>
 npm run shrine -- status <slug> check|live  # 점검중 전환 · 되돌리기
 npm run shrine -- remove <slug>
+npm run shrine -- erase <번호>             # 접수의 개인정보(이메일 · 비밀번호 해시 · 이미지) 바로 파기
+npm run shrine -- blocks                  # 이용 제한 목록
+npm run shrine -- block-ip <IP> <30m|12h|7d> [사유] | unblock <번호>
 ```
 
 Docker에서는 `docker compose exec shrine node --disable-warning=ExperimentalWarning server/cli.ts list`처럼 씁니다.
@@ -87,6 +100,9 @@ Docker에서는 `docker compose exec shrine node --disable-warning=ExperimentalW
 | `server/security.ts` | 입장 표, Turnstile, 요청 제한 |
 | `server/shrines.ts` · `server/db.ts` | 사당 데이터 · SQLite |
 | `server/world.ts` | 맵 (서버와 화면이 같이 씀) |
+| `server/moderation.ts` | 강퇴 · 이용 제한 · 접속자 신고 |
+| `server/admin.ts` · `public/admin/` | 운영자 화면 |
+| `server/retention.ts` · `server/backup.ts` | 보관 기간이 지난 정보 파기 · 백업 |
 | `server/cli.ts` | 운영 도구 |
 | `public/js/main.js` | 화면: 입장, 걷기, 실시간, 창, 연출 |
 | `public/js/avatar*.js` | 캐릭터 도트 (부위별 그림 + 합성) |
@@ -97,7 +113,7 @@ Docker에서는 `docker compose exec shrine node --disable-warning=ExperimentalW
 ## 봇 차단 · 개인정보
 
 - 입장할 때 Turnstile 사람 확인을 거쳐 서명된 입장 표(HttpOnly 쿠키)를 받습니다. WebSocket은 입장 표가 있어야 열리고, IP당 연결 수 · 메시지 수 · 요청 수를 제한합니다.
-- 직접 쓴 채팅은 저장하지 않습니다. IP는 그날만 쓰는 무작위 값과 섞은 해시로만 다룹니다.
+- 직접 쓴 채팅은 저장하지 않습니다. IP는 그날만 쓰는 무작위 값과 섞은 해시로만 다룹니다. 이용 제한을 받은 경우에만 제한 기간 동안 되돌릴 수 없는 값으로 저장합니다.
 - 등록소에 적은 이메일은 운영자 연락용으로 서버에만 두고, 작성자가 공개를 고른 경우에만 사당 창에 보입니다.
 
 ## 기여하기

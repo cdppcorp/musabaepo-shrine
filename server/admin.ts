@@ -22,7 +22,8 @@ import {
 } from './registry.ts'
 import { OpError, addShrine, cleanNote, freePlotIds, moveShrine, removeShrine, shrinesForAdmin, updateShrine } from './ops.ts'
 import { deletePost, findPost, postCounts, postsForReview, setPostHidden } from './ai.ts'
-import { UPLOAD_MAX, ownsUpload, saveUpload } from './uploads.ts'
+import { UPLOAD_MAX, ownsUpload, saveUpload, setReviewerCheck } from './uploads.ts'
+import { destroyProjectNow } from './retention.ts'
 import { blockPlayer, blockTarget, channelStats, isOnline, kickPlayer, playersForAdmin, setFreeChat } from './realtime.ts'
 import {
   BLOCK_MAX_MS, ModerationError, addBlock, blockCounts, closeUserReport, findUserReport, listBlocks, listUserReports, openReportCount,
@@ -308,7 +309,7 @@ function readId(raw: unknown): number | null {
   return Number.isInteger(n) && n > 0 ? n : null
 }
 
-async function reads(res: ServerResponse, s: Session, action: string, q: URLSearchParams) {
+async function reads(req: IncomingMessage, res: ServerResponse, s: Session, action: string, q: URLSearchParams) {
   switch (action) {
     case 'me':
       return json(res, 200, { ok: true, exp: s.exp })
@@ -322,10 +323,17 @@ async function reads(res: ServerResponse, s: Session, action: string, q: URLSear
     case 'project': {
       const id = readId(q.get('id'))
       const p = id ? projectForAdmin(id) : null
-      return p ? json(res, 200, { ok: true, project: p, freePlots: freePlotIds() }) : fail(res, 404, 'none')
+      if (!p) return fail(res, 404, 'none')
+      // 이메일(개인정보)을 보는 화면이라 누가 언제 어느 접수를 열었는지 남깁니다
+      if (p.email) logAction(req, 'project-view', id ?? '')
+      return json(res, 200, { ok: true, project: p, freePlots: freePlotIds() })
     }
-    case 'shrines':
-      return json(res, 200, { ok: true, shrines: shrinesForAdmin(), freePlots: freePlotIds(), plots: PLOTS.length })
+    case 'shrines': {
+      const shrines = shrinesForAdmin()
+      const withEmail = shrines.filter(x => x.email).length
+      if (withEmail) logAction(req, 'shrines-view', '', `이메일 ${withEmail}곳`)
+      return json(res, 200, { ok: true, shrines, freePlots: freePlotIds(), plots: PLOTS.length })
+    }
     case 'posts':
       return json(res, 200, { ok: true, posts: postsForReview() })
     case 'settings':
@@ -467,6 +475,16 @@ async function writes(req: IncomingMessage, res: ServerResponse, s: Session, act
       return json(res, 200, { ok: true, message, project: p })
     }
 
+    case 'project/erase': {
+      // 작성자의 요청 등으로 30일을 기다리지 않고 개인정보를 바로 파기 (되돌릴 수 없음)
+      const id = readId(body.id)
+      if (!id) return fail(res, 400, 'bad')
+      const r = destroyProjectNow(id)
+      if (!r.ok) return fail(res, 404, 'none', r.message)
+      logAction(req, 'project-erase', id, `이미지 ${r.images}개`)
+      return json(res, 200, { ok: true, message: r.message, project: projectForAdmin(id) })
+    }
+
     case 'project/reject': {
       const id = readId(body.id)
       if (!id) return fail(res, 400, 'bad')
@@ -542,6 +560,9 @@ async function sendFile(req: IncomingMessage, res: ServerResponse, name: string)
 
 /* ── 들어오는 곳 ── */
 
+// 검토 대기 이미지(/img/shrines/up/…)는 로그인한 운영자에게도 보여 줍니다 (uploads.ts는 공개 사당 이미지만 누구에게나 줌)
+if (A.enabled) setReviewerCheck(req => ipAllowed(req) && readSession(req) != null)
+
 export async function handleAdmin(req: IncomingMessage, res: ServerResponse, rel: string) {
   if (!A.enabled || !ipAllowed(req)) return notFound(res)
   adminHeaders(res)
@@ -564,7 +585,7 @@ export async function handleAdmin(req: IncomingMessage, res: ServerResponse, rel
   if (method === 'GET') {
     const s = readSession(req)
     if (!s) return fail(res, 401, 'session')
-    return reads(res, s, action, new URL(req.url ?? '/', 'http://local').searchParams)
+    return reads(req, res, s, action, new URL(req.url ?? '/', 'http://local').searchParams)
   }
   if (method !== 'POST') return notFound(res)
   if (!sameOrigin(req)) return fail(res, 403, 'origin')

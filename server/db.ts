@@ -171,6 +171,15 @@ const MIGRATIONS: Migration[] = [
       `)
     },
   },
+  {
+    // 등록소: 맵에 오른 사당의 글자 변경 검토(pending_*), 개인정보 수집 동의 · 검토 시작 · 닫힘 · 파기 시각 (registry.ts · retention.ts)
+    v: 3,
+    name: '등록소 글자 검토 · 보관 기간',
+    up: () => {
+      for (const col of ['pending_name', 'pending_tagline', 'pending_sign']) addColumn('projects', col, 'TEXT')
+      for (const col of ['consent_at', 'review_at', 'closed_at', 'purged_at']) addColumn('projects', col, 'INTEGER')
+    },
+  },
 ]
 
 /** 이 서버가 아는 마지막 DB 구조 번호 */

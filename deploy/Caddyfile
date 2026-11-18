@@ -60,7 +60,9 @@
 		# HTTPS로만 접속 (1년). includeSubDomains · preload는 넣지 않습니다: 같은 도메인의 다른 서비스까지 묶이기 때문
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options "nosniff"
+		# 서버 소프트웨어 이름은 내보내지 않습니다
 		-Server
+		-Via
 		defer
 	}
 

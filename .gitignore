@@ -4,3 +4,6 @@ data
 .env.*
 !.env.example
 *.log
+# 운영 백업(개인정보 포함): 절대 커밋하지 않음
+backups/
+deploy/backups/

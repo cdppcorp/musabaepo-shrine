@@ -33,6 +33,7 @@ const CHAT_FAIL = {
   word: '쓸 수 없는 말이 들어 있어요.',
   slow: '조금 천천히 보내 주세요.',
   same: '같은 말은 잠시 뒤에 다시 보낼 수 있어요.',
+  off: '지금은 직접 쓰는 말을 쉬고 있어요. 고르기 문구로 말해 주세요.',
 }
 /** 행동이 이어지는 시간(초). 캐릭터 그리기(avatar.js)가 남은 시간으로 동작을 그립니다 */
 const EMOTE_DUR = { bow: 1.1, wave: 1.6, jump: 0.7, spin: 0.9, kiss: 1.2, smoke: 6 }
@@ -56,7 +57,10 @@ const LIGHT_FAIL = {
   far: '사당에서 조금 멀어요. 앞으로 가서 다시 눌러 주세요.',
   closed: '점검중인 사당이라 지금은 초를 켤 수 없습니다.',
   prayer: '기원을 다시 골라 주세요.',
+  error: '잠시 문제가 생겼어요. 다시 해 주세요.',
 }
+/** 이용이 막힌 사람에게 (입장 · 연결 모두) */
+const BLOCKED_TEXT = '이용이 제한된 상태예요. 문의는 화면 아래 연락처로 보내 주세요.'
 
 const $ = sel => document.querySelector(sel)
 function el(tag, cls, text) {
@@ -76,7 +80,7 @@ const st = {
   candles: { week: {}, today: 0 },
   look: [...DEFAULT_LOOK], token: '', nick: '',
   me: null, myId: '', channel: 0, max: 30, others: new Map(),
-  ws: null, hello: false, retries: 0, running: false,
+  ws: null, hello: false, retries: 0, retryMax: 5, running: false,
   keys: new Set(), path: [], arrive: false, cam: { x: 0, y: 0 }, last: 0,
   // AI 안경: 켜면 보이는 것마다 옆에 설명 (lens는 화면 단추 자리를 잰 것)
   glasses: false, lens: null, lensAt: 0,
@@ -84,7 +88,7 @@ const st = {
   zoom: loadZoom(),
   sent: { x: 0, y: 0, d: 0, m: false, at: 0 },
   // lit: 사당 slug → 그 사당에 다시 초를 켤 수 있는 시각(ms)
-  near: null, bubbles: new Map(), sparks: [], lit: new Map(), prayer: 'deploy',
+  near: null, bubbles: new Map(), muted: new Set(), sparks: [], lit: new Map(), prayer: 'deploy',
   sheetKey: '', sheetSlug: '', nearKey: '', fortuneTimer: 0, fx: { fortune: null }, flyers: [], floaters: [],
   grid: null, ctx: null, k: 3, dpr: 1, floor: null, hearts: [],
   /** 기원소 밝기: glow는 화면에 보이는 값(목표로 천천히 다가감), flash는 초가 켜질 때 잠깐 번쩍 */
@@ -321,6 +325,7 @@ async function enter() {
         human: '사람 확인을 다시 해 주세요.',
         busy: '입장 요청이 많습니다. 잠시 뒤 다시 눌러 주세요.',
         bad: '캐릭터를 다시 골라 주세요.',
+        blocked: BLOCKED_TEXT,
       }[data.reason] ?? '입장하지 못했습니다. 잠시 뒤 다시 눌러 주세요.'
       resetHumanCheck()
       return
@@ -338,6 +343,7 @@ function backToEntry(text) {
   st.ws?.close()
   st.ws = null
   closeSheet()
+  closeChannels()
   document.body.classList.remove('playing')
   $('#game').hidden = true
   $('#entry').hidden = false
@@ -366,6 +372,8 @@ function startGame() {
   closePops()
   renderList()
   updateHud()
+  st.retries = 0
+  st.retryMax = 5
   connect()
   $('#view').focus()
   if (!st.running) {
@@ -484,8 +492,16 @@ function renderSays() {
       box.append(b)
     }
   }
-  $('#chatForm').hidden = !st.chat.free
+  setFreeChat(st.chat.free)
   $('#chatInput').maxLength = st.chat.max
+}
+
+/** 직접 쓰기 켜짐 · 꺼짐 (운영자가 바꾸면 서버가 알려 줌). 꺼지면 입력칸만 숨기고 고르기 · 행동은 그대로 */
+function setFreeChat(on) {
+  st.chat.free = on
+  const form = $('#chatForm')
+  form.hidden = !on
+  if (!on && form.contains(document.activeElement)) $('#view').focus({ preventScroll: true })
 }
 
 /** 아래 줄 버튼 · 입력칸 (한 번만 연결) */
@@ -552,6 +568,8 @@ function closePops() {
 
 /** 말풍선: 고른 문구는 3초, 직접 쓴 말은 길이에 따라 조금 더 */
 function showBubble(id, text) {
+  // 내가 숨긴 사람의 말풍선은 띄우지 않습니다 (내 화면에서만)
+  if (st.muted.has(id)) return
   st.bubbles.set(id, { text, until: performance.now() + Math.min(6500, 2600 + [...text].length * 90) })
 }
 
@@ -607,11 +625,20 @@ function connect() {
       return
     }
     if (ev.code === 4001) return backToEntry('다른 창에서 입장해서 이 창의 연결을 끊었습니다.')
-    if (!st.hello) return backToEntry('입장 표가 만료됐거나 접속이 많습니다. 다시 입장해 주세요.')
+    if (ev.code === 4002) return backToEntry('오래 자리를 비워서 연결을 정리했어요. 다시 입장해 주세요.')
+    if (ev.code === 4004) return backToEntry('운영자가 연결을 끊었어요. 이용 규칙을 지켜 주세요.')
+    if (ev.code === 4005) return backToEntry(BLOCKED_TEXT)
+    // 처음 붙을 때부터 안 되면(입장 표 만료 · 꽉 참) 입장 화면으로. 다시 붙는 중에 실패한 것이면 계속 시도합니다
+    if (!st.hello && !st.retries) return backToEntry('입장 표가 만료됐거나 접속이 많습니다. 다시 입장해 주세요.')
     st.hello = false
     updateHud()
+    if (ev.code === 1012) {
+      // 서버 재시작: 몇 초 걸리니 조금 더 오래 기다려 봅니다
+      st.retryMax = 8
+      toast('서버를 다시 시작하는 중이에요. 잠시 뒤 다시 연결할게요.')
+    }
     if (ev.code === 1008) toast('메시지를 너무 빨리 보내서 연결이 끊겼습니다.')
-    if (st.retries >= 5) return backToEntry('연결이 끊겼습니다. 다시 입장해 주세요.')
+    if (st.retries >= st.retryMax) return backToEntry('연결이 끊겼습니다. 다시 입장해 주세요.')
     const wait = Math.min(8000, 500 * 2 ** st.retries++)
     setTimeout(() => { if (st.ws === ws) connect() }, wait)
   })
@@ -633,8 +660,11 @@ function personById(id) {
 function onServer(m) {
   switch (m.t) {
     case 'hello':
+      if (st.retries) toast('다시 연결했어요.')
       st.hello = true
       st.retries = 0
+      st.retryMax = 5
+      if (typeof m.chat?.free === 'boolean') setFreeChat(m.chat.free)
       st.myId = m.id
       st.channel = m.channel
       st.max = m.max
@@ -654,6 +684,7 @@ function onServer(m) {
     case 'leave':
       st.others.delete(m.id)
       st.bubbles.delete(m.id)
+      st.muted.delete(m.id)
       updateHud()
       break
     case 'sit': {
@@ -703,7 +734,11 @@ function onServer(m) {
       if (typeof m.s === 'string' && m.s) showBubble(m.id, m.s.slice(0, 60))
       break
     case 'chatNo':
+      if (m.reason === 'off') setFreeChat(false)
       toast(CHAT_FAIL[m.reason] ?? CHAT_FAIL.slow)
+      break
+    case 'chatMode':
+      setFreeChat(Boolean(m.free))
       break
     case 'aipray':
       onAiPrayed(m)
@@ -729,6 +764,15 @@ function onServer(m) {
       break
     case 'reported':
       onReported(m.id)
+      break
+    case 'reportNo':
+      toast(m.reason === 'closed' ? POST_FAIL.closed : POST_FAIL.error)
+      break
+    case 'reportUserOk':
+      toast(m.again ? '이미 신고했어요.' : REPORT_USER_OK)
+      break
+    case 'reportUserNo':
+      toast(REPORT_USER_FAIL[m.reason] ?? REPORT_USER_FAIL.slow)
       break
     case 'emoNo':
       if (m.k === 'smoke') toast('흡연은 고뇌와 번뇌의 공간에서만 할 수 있어요.')
@@ -873,7 +917,10 @@ function bindInput() {
         else closeSheet()
       } else act()
     } else if (k === 'escape') {
-      if (document.body.classList.contains('pop-open')) closePops()
+      if (!$('#chanPop').hidden) {
+        closeChannels()
+        $('#hudChannel').focus({ preventScroll: true })
+      } else if (document.body.classList.contains('pop-open')) closePops()
       else if (st.sheetKey) closeSheet()
     }
   })
@@ -1904,7 +1951,7 @@ function setGlasses(on, quiet = false) {
 const HUD_NOTES = [
   { sel: '#actBtn', side: 'above', title: '할 일 버튼', text: '사당 · 신당 · 의자 가까이 가면 할 수 있는 일이 떠요. Space 키로도 돼요', wide: true },
   { sel: '#actBtn', side: 'above', title: '할 일 버튼', text: '가까이 가면 할 수 있는 일이 떠요', narrow: true },
-  { sel: '#hudChannel', side: 'below', title: '채널', text: '누르면 다른 채널로 옮겨요. 채널마다 20명까지 있어요' },
+  { sel: '#hudChannel', side: 'below', title: '채널', text: '누르면 채널을 옮겨요. 함께 있는 사람 신고 · 말풍선 숨기기도 여기서' },
   { sel: '#minimap', side: 'left', title: '미니맵', text: '누른 곳으로 걸어가요' },
   { sel: '#zoomBar', side: 'left', title: '확대 · 축소', text: '맵을 크게 · 작게 봐요. 마우스 휠 · +/- 키로도 돼요' },
   { sel: '#pickBtn', side: 'above', title: '말 고르기', text: '정해진 인사 · 응원 말을 골라 보내요', wide: true },
@@ -2011,14 +2058,26 @@ function isRepoOnly(s) {
 /* ══════════ 채널 고르기 ══════════ */
 
 function showChannels(list) {
+  st.chanList = list ?? []
   const pop = $('#chanPop')
   pop.textContent = ''
-  for (const ch of list ?? []) {
+  for (const ch of st.chanList) {
     const b = el('button')
     b.type = 'button'
     if (ch.id === st.channel) b.setAttribute('aria-current', 'true')
     b.append(el('span', null, `채널 ${ch.id}`), el('small', null, `${Math.min(st.max, (ch.n ?? 0) + (ch.npc ?? 0))}/${st.max}명`))
     b.addEventListener('click', () => switchChannel(ch.id))
+    pop.append(b)
+  }
+  // 함께 있는 사람 (가까운 사람부터). 누르면 신고 · 말풍선 숨기기
+  const people = [...st.others.values()].sort((a, b) => dist(a, st.me) - dist(b, st.me))
+  pop.append(el('p', 'chan-head', people.length ? '함께 있는 사람 · 누르면 신고 · 숨기기' : '이 채널에 다른 사람이 아직 없어요'))
+  for (const p of people) {
+    const b = el('button', 'chan-person')
+    b.type = 'button'
+    b.dataset.id = p.id
+    b.append(el('span', 'chan-nick', p.nick), el('small', null, st.muted.has(p.id) ? '숨김 ›' : '›'))
+    b.addEventListener('click', () => showPerson(p.id))
     pop.append(b)
   }
   pop.hidden = false
@@ -2028,6 +2087,66 @@ function showChannels(list) {
 function closeChannels() {
   $('#chanPop').hidden = true
   $('#hudChannel').setAttribute('aria-expanded', 'false')
+}
+
+/* ══════════ 함께 있는 사람: 신고 · 말풍선 숨기기 ══════════ */
+
+const REPORT_REASONS = [['abuse', '욕설 · 괴롭힘'], ['spam', '도배'], ['lewd', '음란'], ['other', '기타']]
+const REPORT_USER_OK = '신고했어요. 고마워요.'
+const REPORT_USER_FAIL = { self: '나는 신고할 수 없어요.', slow: '잠시 뒤 다시 해 주세요.', none: '그 사람은 이미 나갔어요.' }
+
+/** 한 사람 메뉴 (채널 창 안에서): 말풍선 숨기기(내 화면에서만, 저장 안 함) · 신고 까닭 고르기 */
+function showPerson(id) {
+  const p = st.others.get(id)
+  if (!p) {
+    toast(REPORT_USER_FAIL.none)
+    return showChannels(st.chanList)
+  }
+  const pop = $('#chanPop')
+  pop.textContent = ''
+  const back = el('button', 'chan-back', '‹ 목록으로')
+  back.type = 'button'
+  back.addEventListener('click', () => {
+    showChannels(st.chanList)
+    pop.querySelector(`[data-id="${CSS.escape(id)}"]`)?.focus()
+  })
+  const muted = st.muted.has(id)
+  const mute = el('button', muted ? 'chan-mute on' : 'chan-mute', muted ? '말풍선 다시 보기' : '말풍선 숨기기')
+  mute.type = 'button'
+  mute.addEventListener('click', () => {
+    if (st.muted.has(id)) st.muted.delete(id)
+    else {
+      st.muted.add(id)
+      st.bubbles.delete(id)
+    }
+    toast(st.muted.has(id) ? `${p.nick}님 말풍선을 내 화면에서 숨겨요.` : `${p.nick}님 말풍선을 다시 보여 줘요.`)
+    showPerson(id)
+  })
+  const reasons = el('div', 'chan-reasons')
+  reasons.setAttribute('role', 'group')
+  reasons.setAttribute('aria-label', '신고 까닭')
+  for (const [r, label] of REPORT_REASONS) {
+    const b = el('button', null, label)
+    b.type = 'button'
+    b.addEventListener('click', () => reportUser(id, r))
+    reasons.append(b)
+  }
+  pop.append(back, el('p', 'chan-title', p.nick), mute, el('p', 'chan-head', '신고하기 · 까닭을 골라 주세요'), reasons)
+  pop.hidden = false
+  $('#hudChannel').setAttribute('aria-expanded', 'true')
+  // 누른 줄이 사라졌으니 키보드 초점을 메뉴 안으로
+  mute.focus({ preventScroll: true })
+}
+
+function reportUser(id, r) {
+  const p = st.others.get(id)
+  closeChannels()
+  $('#view').focus({ preventScroll: true })
+  if (!p) return toast(REPORT_USER_FAIL.none)
+  // 방문 NPC는 정해진 말만 해서 서버 신고 대상이 아닙니다. 다른 방문객과 똑같이 보이게 답만 합니다
+  if (p.npc) return toast(REPORT_USER_OK)
+  if (st.ws?.readyState !== WebSocket.OPEN) return toast(REPORT_USER_FAIL.slow)
+  send({ t: 'reportUser', id, r })
 }
 
 function switchChannel(id) {
@@ -2047,6 +2166,7 @@ const POST_FAIL = {
   far: '게시판 앞으로 가서 써 주세요.', topic: '주제를 골라 주세요.', slow: '30초 뒤에 다시 올릴 수 있어요.',
   many: '오늘은 더 올릴 수 없어요. 내일 다시 써 주세요.', empty: '쓸 말을 적어 주세요.', long: '80자까지 쓸 수 있어요.',
   link: '링크나 메일 주소는 올릴 수 없어요.', contact: '연락처나 메신저 아이디는 올릴 수 없어요.', word: '쓸 수 없는 말이 들어 있어요.',
+  closed: 'AI 트렌드 게시판은 아직 준비 중입니다.', off: '지금은 글쓰기를 쉬고 있어요.', error: '잠시 문제가 생겼어요. 다시 해 주세요.',
 }
 const REPORTED_KEY = 'shrine-reported'
 const trend = { filter: 'all', topic: '', posts: [] }
@@ -2222,6 +2342,9 @@ const REG_FAIL = {
   image: '이미지를 올리지 못했어요. PNG · JPG · WebP, 10MB까지예요.',
   plot: '그 자리는 이미 사당이 있어요. 다른 자리를 골라 주세요.',
   consent: '개인정보 수집 · 이용에 동의해야 접수할 수 있어요.',
+  blocked: '이용이 제한된 상태라 접수할 수 없어요. 문의는 화면 아래 연락처로 보내 주세요.',
+  busy: '지금 올리는 사람이 많아요. 잠시 뒤 다시 해 주세요.',
+  full: '저장 공간이 부족해 지금은 받을 수 없어요. 잠시 뒤 다시 해 주세요.',
 }
 /** 이미지 올리기 실패 까닭 */
 const IMG_FAIL = {

@@ -201,6 +201,15 @@ body.sheet-open .zoom { display: none; }
 .chan-pop button:hover { color: var(--ink); border-color: rgb(255 255 255 / .2); }
 .chan-pop button[aria-current="true"] { color: #1b1206; background: var(--amber); font-weight: 700; }
 .chan-pop small { opacity: .8; font-variant-numeric: tabular-nums; }
+/* 채널 창 안의 함께 있는 사람 · 한 사람 메뉴 (신고 · 말풍선 숨기기) */
+.chan-pop { max-width: min(300px, calc(100vw - 24px)); max-height: calc(100vh - 200px); max-height: calc(100dvh - 200px); overflow-y: auto; }
+.chan-head { margin: 6px 2px 0; font-size: 12px; font-weight: 700; color: var(--ink-mute); }
+.chan-title { margin: 2px 2px 0; font-size: 14px; font-weight: 700; color: var(--ink); overflow-wrap: anywhere; }
+.chan-nick { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chan-pop .chan-back { justify-content: flex-start; background: transparent; padding: 6px 8px; }
+.chan-pop .chan-mute.on { color: var(--ink); border-color: var(--amber); }
+.chan-reasons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
+.chan-pop .chan-reasons button { justify-content: center; }
 
 /* 프로젝트 등록소: 뒤를 어둡게 덮는 모달 */
 .modal {

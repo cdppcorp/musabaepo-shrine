@@ -22,6 +22,7 @@ const ACTIONS = {
   'post-hide': '글 숨김', 'post-show': '글 다시 보임', 'post-delete': '글 지움',
   'player-kick': '강퇴', 'player-block': '차단', 'ip-block': 'IP 차단', 'block-remove': '차단 풀기',
   'report-dismiss': '신고 넘김', 'chat-free': '직접 채팅 켜기 · 끄기',
+  'project-view': '접수 열람 (이메일)', 'shrines-view': '사당 목록 열람 (이메일)', 'project-erase': '개인정보 파기',
 }
 const REASONS = {
   bad: '입력 형식이 올바르지 않습니다', origin: '이 화면에서 보낸 요청만 받습니다', session: '로그인이 끝났습니다',
@@ -576,8 +577,12 @@ async function projectDetail(id, freePlots, filter) {
       ['분류', CATEGORIES[p.category] ?? p.category],
       ['GitHub', extLink(p.github), p.github ? (p.repoOk ? `공개 저장소 확인 · 별 ${fmtN(p.stars)}` : '확인 못 함') : ''],
       ['서비스 주소', extLink(p.url)],
-      ['이메일', p.email, p.emailPublic ? '(사당에 공개)' : '(비공개)'],
+      ['이메일', p.email || '-', p.purgedAt ? '' : p.emailPublic ? '(사당에 공개)' : '(비공개)'],
       ['작성', p.nick, `· ${fmtTime(p.at)}`],
+      p.consentAt ? ['수집 동의', fmtTime(p.consentAt)] : null,
+      p.reviewAt ? ['검토 대기', `${fmtTime(p.reviewAt)}부터`, '90일이 지나면 저절로 끝납니다'] : null,
+      p.closedAt ? ['닫힌 때', fmtTime(p.closedAt), p.purgedAt ? '' : '30일 뒤 개인정보 파기'] : null,
+      p.purgedAt ? ['파기', fmtTime(p.purgedAt), '이메일 · 비밀번호 해시 · 링크 · 이미지를 지웠습니다'] : null,
       ['원하는 자리', p.wantPlot == null ? '아무 데나' : plotName(p.wantPlot)],
       p.slug ? ['사당', h('a', { href: `#shrines?edit=${encodeURIComponent(p.slug)}` }, p.slug)] : null,
       p.note ? ['메모', p.note] : null,
@@ -585,10 +590,18 @@ async function projectDetail(id, freePlots, filter) {
   )
   const imgs = [thumb(p.screen, '지금 이미지'), p.pendingScreen != null ? (thumb(p.pendingScreen, '바꿀 이미지') ?? h('p', { class: 'note' }, '바꿀 이미지: (지움)')) : null].filter(Boolean)
   if (imgs.length) box.append(h('div', { class: 'thumbs' }, imgs))
-  if (p.pendingGithub != null || p.pendingUrl != null) {
+  const linkChange = p.pendingGithub != null || p.pendingUrl != null
+  const textChange = p.pendingName != null || p.pendingTagline != null || p.pendingSign != null
+  if (linkChange || textChange) {
     box.append(h('div', { class: 'change-box' },
-      h('strong', null, '바꾸려는 링크'),
-      dl([['GitHub', extLink(p.pendingGithub)], ['서비스 주소', extLink(p.pendingUrl)]])))
+      h('strong', null, linkChange && textChange ? '바꾸려는 글자 · 링크' : textChange ? '바꾸려는 글자' : '바꾸려는 링크'),
+      dl([
+        p.pendingName != null ? ['이름', p.pendingName, `지금: ${p.name}`] : null,
+        p.pendingTagline != null ? ['한 줄 소개', p.pendingTagline, `지금: ${p.tagline}`] : null,
+        p.pendingSign != null ? ['지붕 소개', p.pendingSign || '(비움)', `지금: ${p.sign || '-'}`] : null,
+        linkChange ? ['GitHub', extLink(p.pendingGithub)] : null,
+        linkChange ? ['서비스 주소', extLink(p.pendingUrl)] : null,
+      ])))
   }
 
   const note = input('note', { max: 80, placeholder: '사유 (작성자에게 보입니다, 80자까지)' })
@@ -615,9 +628,21 @@ async function projectDetail(id, freePlots, filter) {
     reject.addEventListener('click', () => busy(reject, async () => after(await api('project/reject', { id: p.id, note: note.value }))))
     box.append(h('div', { class: 'act' },
       h('h3', null, '변경 검토'),
-      h('p', { class: 'note' }, '승인하면 새 링크 · 이미지가 사당에 바로 반영됩니다. 반려하면 사당은 원래대로 둡니다.'),
+      h('p', { class: 'note' }, '승인하면 바꾼 글자 · 링크 · 이미지가 사당에 바로 반영됩니다. 반려하면 사당은 원래대로 둡니다.'),
       h('div', { class: 'act-row' }, approve),
       h('div', { class: 'act-row' }, note, reject)))
+  }
+  if (!p.purgedAt) {
+    const erase = h('button', { class: 'btn btn-danger', type: 'button' }, '개인정보 바로 파기')
+    erase.addEventListener('click', () => busy(erase, async () => {
+      const live = p.status === 'approved' || p.status === 'pending'
+      if (!confirm(`접수 #${p.id}의 이메일 · 비밀번호 해시 · 링크 · 이미지를 지금 지울까요? 되돌릴 수 없습니다.${live ? '\n접수는 내림으로 바뀌고, 맵에 있는 사당도 함께 내려갑니다.' : ''}`)) return
+      after(await api('project/erase', { id: p.id }))
+    }))
+    box.append(h('div', { class: 'act' },
+      h('h3', null, '개인정보 파기'),
+      h('p', { class: 'note' }, '작성자가 삭제를 요청했을 때 씁니다. 그냥 두면 반려 · 내림 30일 뒤 저절로 파기됩니다.'),
+      h('div', { class: 'act-row' }, erase)))
   }
   const back = h('a', { class: 'btn btn-sm', href: `#projects?f=${filter}` }, '닫기')
   box.querySelector('.detail-head').append(back)

@@ -8,7 +8,7 @@
 //   - 반려되거나 내린 접수의 이미지는 30일 뒤 retention.ts가 지웁니다
 //   - 본문을 읽기 전에 할당량 · 동시 업로드 수 · 디스크 여유를 먼저 봅니다 (형식이 틀린 시도도 셉니다)
 import { randomBytes } from 'node:crypto'
-import { createReadStream, mkdirSync, readdirSync, statSync, statfsSync, unlinkSync, writeFileSync } from 'node:fs'
+import { accessSync, constants, createReadStream, mkdirSync, readdirSync, statSync, statfsSync, unlinkSync, writeFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { join } from 'node:path'
 import { pipeline } from 'node:stream'
@@ -495,8 +495,13 @@ export function cleanupUploads() {
   pruneMemory(now)
 }
 
-/** 헬스 체크용: 업로드 폴더 상태 (쓰기는 확인하지 않고 읽기만) */
+/** 헬스 체크용: 업로드 폴더 상태 (사용률 · 디스크 여유 부족 · 쓸 수 있는지) */
 export function uploadStats() {
-  const free = freeBytes()
-  return { usedPct: Math.round((totalBytes / TOTAL_MAX) * 100), lowDisk: free < MIN_FREE }
+  let writable = true
+  try {
+    accessSync(UPLOAD_DIR, constants.W_OK)
+  } catch {
+    writable = false
+  }
+  return { usedPct: Math.round((totalBytes / TOTAL_MAX) * 100), lowDisk: freeBytes() < MIN_FREE, writable }
 }

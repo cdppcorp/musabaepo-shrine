@@ -382,8 +382,9 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   if (read && path === '/.well-known/security.txt') return config.contactEmail ? text(res, 200, securityTxt()) : notFound(res, req)
   // 경로 앞부분을 쓸 때만 / → /shrine/ 로 보냅니다 (독립 도메인 루트면 그대로)
   if (base && (path === '/' || path === base)) return redirect(res, `${base}/`)
-  // 예전 주소(/shrine/...)로 들어오면 도메인 루트의 같은 곳으로
-  if (!base && (path === '/shrine' || path.startsWith('/shrine/'))) return redirect(res, path.slice('/shrine'.length) || '/')
+  // 예전 주소(/shrine/...)로 들어오면 도메인 루트의 같은 곳으로.
+  // 앞의 / 여러 개는 하나로 (/shrine//evil.com → //evil.com 이면 다른 사이트로 가는 열린 리다이렉트가 됨)
+  if (!base && (path === '/shrine' || path.startsWith('/shrine/'))) return redirect(res, `/${path.slice('/shrine'.length).replace(/^\/+/, '')}`)
   if (!path.startsWith(`${base}/`)) return notFound(res, req)
 
   const rel = path.slice(base.length)

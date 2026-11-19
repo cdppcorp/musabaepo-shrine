@@ -14,7 +14,7 @@ driver.mjs가 이 프로세스 하나를 띄워 두고 계속 씁니다.
     {"id":9,"op":"unlock","key":"l1"}                                                    ROLLBACK 후 닫기
     {"id":10,"op":"dump","db":"…"}                 모든 표의 모든 행 (row_to_json 글자) → {"text":"…"}
     {"id":11,"op":"tables","db":"…"} / {"op":"columns","db":"…","table":"…"}
-    {"id":12,"op":"redis_flush","url":"redis://…/3"}
+    {"id":12,"op":"redis_flush","url":"redis://…/3"} / {"op":"redis_keys","url":"…","match":"shrine:*"}
 
 접속: SHRINE_TEST_PG (관리자 접속 주소, 기본 개발용 컨테이너 postgresql://postgres:dev@127.0.0.1:55432/postgres).
 """
@@ -120,7 +120,7 @@ async def handle(req: dict) -> dict:
         return {}
     if op == "drop_prefix":
         prefix = req["prefix"]
-        if not re.fullmatch(r"[a-z_]{6,40}", prefix):
+        if not re.fullmatch(r"[a-z][a-z0-9_]{5,40}", prefix):
             raise ValueError("접두어가 이상합니다")
         c = await _conn("")
         dbs = [r["datname"] for r in await c.fetch("SELECT datname FROM pg_database WHERE starts_with(datname, $1)", prefix)]
@@ -180,6 +180,19 @@ async def handle(req: dict) -> dict:
         try:
             await r.flushdb()
             return {"databases": int((await r.config_get("databases")).get("databases", 16))}
+        finally:
+            await r.aclose()
+    if op == "redis_keys":
+        import redis.asyncio as aioredis
+
+        r = aioredis.from_url(req["url"], socket_connect_timeout=3)
+        try:
+            keys = []
+            async for k in r.scan_iter(match=req.get("match", "*"), count=100):
+                keys.append(k.decode("utf-8", "replace"))
+                if len(keys) >= 200:
+                    break
+            return {"keys": keys}
         finally:
             await r.aclose()
     raise ValueError(f"모르는 op: {op!r}")

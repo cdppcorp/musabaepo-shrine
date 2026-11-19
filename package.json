@@ -12,7 +12,8 @@
     "start": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning server/main.ts",
     "check": "tsc -p .",
     "backup": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning server/backup.ts",
-    "shrine": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning server/cli.ts"
+    "shrine": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning server/cli.ts",
+    "test:conformance": "node --disable-warning=ExperimentalWarning tests/conformance/run.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"

@@ -1,0 +1,172 @@
+# 무사배포 기원소 Python 서버 구성 (api + PostgreSQL + Redis + Caddy). 교체(P5) 전까지는 docker-compose.yml(Node)이 운영본입니다.
+#
+#   ../.env에 지금 값 + 아래 두 줄을 더 넣습니다 (비밀번호는 16진 무작위: openssl rand -hex 24 — URL에 그대로 들어가므로 @ : / 금지)
+#     POSTGRES_PASSWORD=<무작위>
+#   cd deploy && docker compose --env-file ../.env -f docker-compose.py.yml up -d --build
+#   (--env-file: 아래 ${POSTGRES_PASSWORD}를 채우는 데 씁니다. 컨테이너 환경 변수는 각 서비스의 env_file이 따로 넣습니다)
+#
+# Node 구성과 같은 점: Caddyfile을 그대로 씁니다(reverse_proxy shrine:3300 → api 서비스의 별칭 'shrine'),
+#   앱 포트는 밖으로 열지 않음, 읽기 전용 · 권한 최소 · 메모리 상한 · 로그 10MB×5.
+# 프로젝트 이름은 Node 구성과 같은 'deploy'(폴더 이름)라서 caddy-data(인증서) 볼륨을 그대로 이어 씁니다.
+# 교체할 때: docker compose -f docker-compose.yml down → 이 파일로 up. 두 구성을 동시에 띄우지 않습니다 (80 · 443이 겹침).
+#
+# Redis는 디스크에 쓰지 않습니다 (RDB 저장 · AOF 모두 끔, 볼륨 없음).
+#   담는 것: 요청 제한 횟수 · 잠금 · 신고처럼 Node가 프로세스 메모리에 두던 짧은 상태뿐이고, 모든 키에 만료가 있습니다.
+#   다시 띄우면 비는 것이 Node와 같은 동작이고, 그날 IP 해시가 디스크에 남지 않습니다 (개인정보 처리방침).
+#   오래 남아야 하는 것(PIN 잠금 pin_locks, 차단 blocks 등)은 PostgreSQL에 있습니다.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-hardening: &hardening
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: app/Dockerfile
+    image: musabaepo-shrine-api:latest
+    restart: unless-stopped
+    init: true
+    env_file: ../.env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3300
+      DATA_DIR: /data
+      # 앱은 Caddy 뒤에서만 받습니다 (포트를 바깥에 열지 않음)
+      TRUST_PROXY: "true"
+      DATABASE_URL: postgresql://shrine:${POSTGRES_PASSWORD:?../.env에 POSTGRES_PASSWORD를 넣고 --env-file ../.env로 실행하세요}@postgres:5432/shrine
+      REDIS_URL: redis://redis:6379/0
+    networks:
+      default:
+        # Caddyfile이 reverse_proxy shrine:3300으로 찾습니다
+        aliases:
+          - shrine
+    volumes:
+      # 올린 이미지 (DATA_DIR/uploads)
+      - api-data:/data
+    expose:
+      - "3300"
+    # 헬스 체크는 Dockerfile의 HEALTHCHECK(python -m shrine.healthcheck → GET /healthz)
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    <<: *hardening
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 200
+    # uvicorn: 처리 중 요청 · WebSocket 정리 최대 5초 + 끝내기 훅
+    stop_grace_period: 15s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging: *logging
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    # 이미지의 postgres 사용자(70)로 바로 돕니다 (root로 시작해 권한을 바꾸는 단계가 없어 cap을 모두 뺄 수 있음)
+    user: "70:70"
+    environment:
+      POSTGRES_DB: shrine
+      POSTGRES_USER: shrine
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?../.env에 POSTGRES_PASSWORD를 넣고 --env-file ../.env로 실행하세요}
+      # 첫 실행에서 만드는 계정의 비밀번호 방식
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    volumes:
+      # 이 볼륨이 DB 전부입니다. 백업은 호스트 cron의 pg_dump (P4, deploy/README.md에 적을 예정)
+      - pg-data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shrine -d shrine -h 127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    shm_size: 128m
+    <<: *hardening
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 200
+    # 끝낼 때 체크포인트를 마칠 시간
+    stop_grace_period: 30s
+    logging: *logging
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # 이미지의 redis 사용자(999)로 바로 돕니다
+    user: "999:1000"
+    # 디스크에 쓰지 않음 (맨 위 설명). 메모리 64MB를 넘으면 만료가 붙은 키부터 버립니다
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - 64mb
+      - --maxmemory-policy
+      - volatile-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    read_only: true
+    tmpfs:
+      # 이미지가 /data를 볼륨으로 선언해서, 이름 없는 볼륨이 생기지 않게 메모리로 덮습니다 (쓰는 일은 없음)
+      - /data:size=8m,uid=999,gid=1000
+    expose:
+      - "6379"
+    <<: *hardening
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 100
+    logging: *logging
+
+  caddy:
+    image: caddy:2.11
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      # Node 구성과 같은 Caddyfile (reverse_proxy shrine:3300)
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+      - caddy-logs:/var/log/caddy
+    # Caddyfile의 {$SHRINE_DOMAIN} · {$ACME_EMAIL}
+    env_file: ../.env
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 200
+    depends_on:
+      api:
+        condition: service_healthy
+    logging: *logging
+
+volumes:
+  api-data:
+  pg-data:
+  caddy-data:
+  caddy-config:
+  caddy-logs:

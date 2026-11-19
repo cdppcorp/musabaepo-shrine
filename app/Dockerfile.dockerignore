@@ -1,0 +1,12 @@
+# app/Dockerfile 전용 (BuildKit은 <Dockerfile 이름>.dockerignore를 루트 .dockerignore 대신 씁니다).
+# 허용 목록: 아래에 적은 것만 이미지 빌드에 보냅니다. .env · data · backups · 시험 · .venv · node_modules는 들어가지 않습니다.
+**
+!app/pyproject.toml
+!app/uv.lock
+!app/alembic.ini
+!app/alembic/**
+!app/shrine/**
+!public/**
+**/__pycache__
+**/*.pyc
+**/.DS_Store

@@ -2521,6 +2521,20 @@ function regField(name, label, input, opts = {}) {
   wrap.dataset.name = name
   const head = el('span', 'rf-label', label)
   if (opts.optional) head.append(el('em', null, '선택'))
+  // 글자 수 제한이 있는 칸: 오른쪽에 '지금/최대' (서버와 같이 글자 단위로 셈. 한글 · 이모지도 한 글자)
+  if (opts.count && input.maxLength > 0) {
+    const max = input.maxLength
+    const count = el('span', 'rf-count')
+    count.setAttribute('aria-live', 'polite')
+    const show = () => {
+      const n = [...input.value].length
+      count.textContent = `${n}/${max}`
+      count.classList.toggle('full', n >= max)
+    }
+    show()
+    input.addEventListener('input', show)
+    head.append(count)
+  }
   wrap.append(head, input)
   if (opts.help) wrap.append(el('small', 'rf-help', opts.help))
   wrap.append(el('small', 'rf-err'))
@@ -2581,10 +2595,10 @@ function projectFields(form, p = {}) {
   toggle.append(pub, el('span', 'track'), el('span', null, '사당에 이메일 공개'))
   form.append(
     group('프로젝트', null,
-      regField('name', '이름', regInput('name', { max: 20, value: p.name, placeholder: '무사배포 봇' })),
+      regField('name', '이름', regInput('name', { max: 20, value: p.name, placeholder: '무사배포 봇' }), { count: true }),
       regField('category', '분류', regSelect(p.category ?? 'devtools')),
-      regField('sign', '사당 소개 (8자)', regInput('sign', { max: 8, value: p.sign, placeholder: '배포 지킴이 봇' }), { help: '공백 포함 8자. 사당 지붕 위에 늘 떠 있어요' }),
-      regField('tagline', '한 줄 소개', regInput('tagline', { max: 40, value: p.tagline, placeholder: '배포 전에 체크리스트를 챙겨 주는 봇' }), { full: true }),
+      regField('sign', '사당 소개', regInput('sign', { max: 8, value: p.sign, placeholder: '배포 지킴이 봇' }), { count: true, help: '공백 포함 8자까지. 사당 지붕 위에 늘 떠 있어요' }),
+      regField('tagline', '한 줄 소개', regInput('tagline', { max: 40, value: p.tagline, placeholder: '배포 전에 체크리스트를 챙겨 주는 봇' }), { full: true, count: true, help: '공백 포함 40자까지. 사당 창 맨 위에 보여요' }),
       imageField(form, p),
     ),
     ...(p.status === 'approved' ? [] : [group('채널 · 자리', '사당은 고른 채널에서만 보여요', plotPicker(form, p))]),

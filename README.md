@@ -69,7 +69,7 @@ uv run python -m shrine --env-file ../.env      # http://127.0.0.1:3300/
 | `FREE_CHAT` | `off`면 직접 채팅을 끄고 정해진 말만 |
 | `GITHUB_CHECK` | `off`면 등록소의 GitHub 공개 저장소 확인을 끔 |
 | `CANDLE_COOLDOWN_MS` | 같은 사당 초 켜기 간격 (기본 30분) |
-| `ADMIN_PASSWORD` · `ADMIN_IPS` | 운영자 화면(`/admin`) 비밀번호(16자 이상)와 허용 IP. 비워 두면 운영자 화면이 꺼집니다 |
+| `ADMIN_PASSWORD` · `ADMIN_IPS` | 운영자 화면(`/admin`) 비밀번호(16자 이상)와 허용 IP · 대역(예: `192.168.123.0/24`). 비밀번호를 비워 두면 운영자 화면이 꺼집니다 |
 | `NOTIFY_WEBHOOK_URL` | (선택) 새 접수 · 신고 · 장애를 알릴 웹훅 주소 (https) |
 | `BOARD_OPEN` | `on`이면 AI 트렌드 게시판 글쓰기를 엽니다 (기본 off, 준비 중) |
 | `WS_MAX_PER_IP` | IP당 동시 실시간 연결 수 (기본 4, IPv6는 /64를 한 IP로 셈) |

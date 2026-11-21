@@ -26,6 +26,19 @@ from pathlib import Path
 from .jscompat import JS_DOT, JS_WS_CLASS, is_ip, js_trim, utf16_len, utf16_units
 from .whatwg import parse_http_url
 
+
+def _admin_network(text: str) -> str | None:
+    """ADMIN_IPS의 대역 한 칸 → 정규형('192.168.123.0/24'). 틀리거나 너무 넓으면 None."""
+    import ipaddress
+
+    try:
+        net = ipaddress.ip_network(text, strict=False)
+    except ValueError:
+        return None
+    if net.prefixlen < (8 if net.version == 4 else 32):
+        return None
+    return str(net)
+
 MAX_SAFE_INTEGER = 9007199254740991
 
 # 저장소 루트의 public/ (Docker 이미지도 같은 모양으로 둡니다: app/ 옆에 public/)
@@ -288,6 +301,17 @@ def load_config(env: Mapping[str, str] | None = None) -> ConfigResult:
                 continue
             if ip.startswith("::ffff:") and is_ip(ip[7:]) == 4:
                 ip = ip[7:]
+            # 대역(CIDR)도 받습니다: 사무실 내부망 전체 등 (예: 192.168.123.0/24). 너무 넓은 대역은 거절
+            if "/" in ip:
+                net = _admin_network(ip)
+                if net is None:
+                    prod_only(
+                        f'ADMIN_IPS의 대역("{js_trim(raw)}")이 틀렸거나 너무 넓습니다 (IPv4는 /8 이상, IPv6는 /32 이상). 운영자 화면을 켜지 않습니다'
+                    )
+                    admin_password = ""
+                    break
+                admin_ips.append(net)
+                continue
             if not is_ip(ip):
                 prod_only(
                     f'ADMIN_IPS에 IP 주소가 아닌 값("{js_trim(raw)}")이 있습니다 (쉼표로 나눈 IP만). 운영자 화면을 켜지 않습니다'

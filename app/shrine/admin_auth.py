@@ -18,6 +18,7 @@ Redis 키 (만료가 붙음):
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import time
 from dataclasses import dataclass, field
@@ -63,8 +64,10 @@ FAILS_TOTAL = 50
 class AdminSetup:
     enabled: bool
     keys: AdminKeys | None = None
-    #: 허용 IP (normIp한 값, 넣은 순서 · 중복 없음). 비면 제한 없음
+    #: 허용 IP · 대역 (normIp한 값 · CIDR 정규형, 넣은 순서 · 중복 없음). 비면 제한 없음
     ips: list[str] = field(default_factory=list)
+    #: ips 중 대역(CIDR)만 ipaddress 객체로 (포함 여부 확인용)
+    nets: list[Any] = field(default_factory=list)
     warned_at: float = 0.0
 
 
@@ -78,11 +81,21 @@ def setup(ctx) -> AdminSetup:
         st = AdminSetup(enabled=False)
     else:
         ips: list[str] = []
+        nets: list[Any] = []
         for raw in ctx.config.admin_ips:
+            if "/" in raw:  # 대역 (config가 이미 검사 · 정규형으로 둠)
+                try:
+                    net = ipaddress.ip_network(raw, strict=False)
+                except ValueError:
+                    continue
+                if str(net) not in ips:
+                    ips.append(str(net))
+                    nets.append(net)
+                continue
             ip = norm_admin_ip(raw)
             if is_ip(ip) and ip not in ips:
                 ips.append(ip)
-        st = AdminSetup(enabled=True, keys=admin_keys(ctx.config.ticket_secret, pw), ips=ips)
+        st = AdminSetup(enabled=True, keys=admin_keys(ctx.config.ticket_secret, pw), ips=ips, nets=nets)
     ctx._p4_admin = st
     return st
 
@@ -96,7 +109,18 @@ def _client_ip(request: Request) -> str:
 
 
 def ip_allowed(st: AdminSetup, request: Request) -> bool:
-    return not st.ips or norm_admin_ip(_client_ip(request)) in st.ips
+    if not st.ips:
+        return True
+    ip = norm_admin_ip(_client_ip(request))
+    if ip in st.ips:
+        return True
+    if not st.nets:
+        return False
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(addr.version == n.version and addr in n for n in st.nets)
 
 
 def log_ip(st: AdminSetup, request: Request) -> str:

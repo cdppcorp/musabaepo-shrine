@@ -3,11 +3,32 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>무사배포 기원소</title>
-  <meta name="description" content="개발자가 캐릭터로 걸어 다니며 서로의 프로젝트 사당에 무사배포 초를 켜 주는 도트 공간">
+  <title>무사배포 기원소 · 배포가 무사하길 비는 개발자 도트 마당</title>
+  <meta name="description" content="개발자 캐릭터로 도트 마당을 함께 걸으며 서로의 프로젝트 사당에 초를 켜 주고, AI 신당에 무사배포를 비는 곳입니다. 로그인 없이 바로 들어오고, 내 프로젝트도 등록소에서 사당으로 신청할 수 있어요.">
+  <!-- 검색 · 공유: 자리표시 ORIGIN · BASE는 서버가 PUBLIC_ORIGIN · BASE_PATH로, ROBOTS는 ALLOW_INDEXING으로 채웁니다 (app/shrine/web/pages.py) -->
+  <meta name="robots" content="{{ROBOTS}}">
+  <link rel="canonical" href="{{ORIGIN}}{{BASE}}/">
+  <meta name="theme-color" content="#0a1526">
+  <link rel="icon" href="{{BASE}}/favicon.ico" sizes="16x16 32x32 48x48">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{BASE}}/img/meta/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="{{BASE}}/img/meta/favicon-16.png">
+  <link rel="apple-touch-icon" href="{{BASE}}/apple-touch-icon.png">
+  <link rel="manifest" href="{{BASE}}/site.webmanifest">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="무사배포 기원소">
+  <meta property="og:locale" content="ko_KR">
+  <meta property="og:title" content="무사배포 기원소">
+  <meta property="og:description" content="캐릭터로 걸어 다니며 프로젝트 사당에 초를 켜 주고 AI 신당에 무사배포를 빌어 보세요. 로그인 없이 바로 들어옵니다.">
+  <meta property="og:url" content="{{ORIGIN}}{{BASE}}/">
+  <meta property="og:image" content="{{ORIGIN}}{{BASE}}/img/meta/og-image.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="밤의 도트 마당에 신당과 사당이 늘어선 기원소 화면 위에 쓴 무사배포 기원소 제목">
+  <meta name="twitter:card" content="summary_large_image">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebSite","name":"무사배포 기원소","url":"{{ORIGIN}}{{BASE}}/","inLanguage":"ko-KR","description":"배포가 무사하길 비는 개발자 도트 마당"}</script>
   <meta name="shrine-base" content="{{BASE}}">
   <meta name="turnstile-site-key" content="{{TURNSTILE_SITE_KEY}}">
-  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="{{BASE}}/style.css">
   <script type="module" src="{{BASE}}/js/main.js"></script>
 </head>

@@ -6,8 +6,15 @@
   <title>이용약관 · 무사배포 기원소</title>
   <meta name="description" content="무사배포 기원소를 쓸 때 지켜야 할 약속, 운영자의 조치, 등록소에 올린 내용의 책임과 권리를 안내합니다.">
   <meta name="color-scheme" content="dark light">
-  <link rel="icon" href="data:,">
-  <!-- 이 문서는 {BASE}/terms 주소로 나갑니다. 상대 주소라서 BASE_PATH가 있어도 그대로 맞습니다 -->
+  <!-- 이 문서는 {BASE}/terms 주소로 나갑니다. 상대 주소라서 BASE_PATH가 있어도 그대로 맞습니다.
+       정식 주소(canonical)와 robots의 자리표시는 서버가 PUBLIC_ORIGIN · BASE_PATH · ALLOW_INDEXING으로 채웁니다 (app/shrine/web/pages.py) -->
+  <meta name="robots" content="{{ROBOTS}}">
+  <link rel="canonical" href="{{ORIGIN}}{{BASE}}/terms">
+  <meta name="theme-color" content="#0a1526">
+  <link rel="icon" href="favicon.ico" sizes="16x16 32x32 48x48">
+  <link rel="icon" type="image/png" sizes="32x32" href="img/meta/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="img/meta/favicon-16.png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <link rel="stylesheet" href="style.css">
 </head>
 <body class="legal">

@@ -2,8 +2,11 @@
 
 FastAPI의 StaticFiles는 머리글 · 끝 빗금 · HEAD 처리가 Node와 달라 쓰지 않고 직접 보냅니다.
   · 정적 파일: STATIC_RE에 맞고 확장자가 TYPES에 있는 것만. 약한 ETag W/"<크기 16진>-<floor(mtimeMs) 16진>",
-    Last-Modified, Content-Length, .js/.css는 no-cache · 이미지는 하루 캐시, 304 · HEAD.
-  · 첫 화면: 시작할 때 한 번 읽어 {{BASE}} · {{ORIGIN}} · {{TURNSTILE_SITE_KEY}}를 바꾸고 강한 ETag(sha1 앞 16자).
+    Last-Modified, Content-Length, .js/.css는 no-cache · 이미지(파비콘 · 공유 이미지 포함)와 site.webmanifest는 하루 캐시, 304 · HEAD.
+  · 첫 화면: 시작할 때 한 번 읽어 {{BASE}} · {{ORIGIN}} · {{ROBOTS}} · {{TURNSTILE_SITE_KEY}}를 바꾸고 강한 ETag(sha1 앞 16자).
+    {{ORIGIN}}{{BASE}}로 정식 주소(canonical) · 공유 카드(og:url · og:image)를 절대 주소로 만들고,
+    {{ROBOTS}}는 ALLOW_INDEXING을 따릅니다 (꺼져 있으면 noindex: X-Robots-Tag 머리글과 같은 뜻).
+  · 약관 · 처리방침: 요청마다 파일을 읽어 같은 자리표시를 채웁니다. ETag는 채운 내용의 sha1 (설정이 바뀌어도 맞게).
 """
 
 from __future__ import annotations
@@ -34,11 +37,16 @@ TYPES = {
     ".webp": "image/webp",
     ".svg": "image/svg+xml",
     ".ico": "image/x-icon",
+    ".webmanifest": "application/manifest+json",
 }
 #: public/ 아래에서 내보내는 파일 (그 밖은 모두 404)
 STATIC_RE = re.compile(
-    r"/(?:js/[a-z0-9-]+\.js|style\.css|favicon\.(?:ico|svg)|apple-touch-icon\.png|img/[a-z0-9/_-]+\.(?:png|jpe?g|webp|svg))"
+    r"/(?:js/[a-z0-9-]+\.js|style\.css|favicon\.(?:ico|svg)|apple-touch-icon\.png|site\.webmanifest"
+    r"|img/[a-z0-9/_-]+\.(?:png|jpe?g|webp|svg))"
 )
+#: 검색 로봇 안내 (<meta name="robots">). 꺼짐은 security.py의 X-Robots-Tag와 같은 값
+ROBOTS_ON = "index, follow, max-image-preview:large"
+ROBOTS_OFF = "noindex, nofollow"
 #: 약관 · 처리방침: 주소 → public/legal 파일
 LEGAL = {"/privacy": "privacy.html", "/terms": "terms.html"}
 LEGAL_FILE_RE = re.compile(r"/legal/(privacy|terms)\.html")
@@ -54,6 +62,12 @@ def mtime_ms(st: os.stat_result) -> float:
     """Node의 stats.mtimeMs와 같은 계산 (초 × 1000 + 나노초 / 1e6, 부동소수)."""
     sec, nsec = divmod(st.st_mtime_ns, 10**9)
     return sec * 1e3 + nsec / 1e6
+
+
+def content_etag(body: bytes) -> str:
+    """보내는 내용으로 만든 강한 ETag (sha1을 base64url로, 앞 16자)."""
+    digest = base64.urlsafe_b64encode(hashlib.sha1(body).digest()).decode("ascii").rstrip("=")
+    return f'"{digest[:16]}"'
 
 
 def file_etag(size: int, mtime: float) -> str:
@@ -73,14 +87,18 @@ class Pages:
         self.public_dir = os.path.normpath(config.public_dir)
         self.legal_dir = os.path.join(self.public_dir, "legal")
         template = Path(self.public_dir, "index.html").read_text(encoding="utf-8")
-        html = (
+        self.index_body = self.fill(template).encode("utf-8")
+        self.index_etag = content_etag(self.index_body)
+
+    def fill(self, template: str) -> str:
+        """첫 화면 · 약관/처리방침의 자리표시 채우기."""
+        config = self.config
+        return (
             template.replace("{{BASE}}", self.base)
             .replace("{{ORIGIN}}", html_escape(config.public_origin))
+            .replace("{{ROBOTS}}", ROBOTS_ON if config.allow_indexing else ROBOTS_OFF)
             .replace("{{TURNSTILE_SITE_KEY}}", config.turnstile_site_key)
         )
-        self.index_body = html.encode("utf-8")
-        digest = base64.urlsafe_b64encode(hashlib.sha1(self.index_body).digest()).decode("ascii").rstrip("=")
-        self.index_etag = f'"{digest[:16]}"'
 
     # ── 첫 화면 ──
 
@@ -93,17 +111,18 @@ class Pages:
     # ── 약관 · 처리방침 ──
 
     async def legal(self, request: Request, name: str) -> NodeResponse:
-        """문서 안 링크는 상대 주소라서 그대로 보냅니다. 파일이 없으면 404."""
+        """문서 안 링크는 상대 주소라서 BASE_PATH와 상관없이 맞습니다. 정식 주소 · robots 자리표시만 채웁니다. 파일이 없으면 404."""
         path = os.path.join(self.legal_dir, name)
         try:
             st = await anyio.to_thread.run_sync(os.stat, path)
             if not stat.S_ISREG(st.st_mode):
                 return not_found(request)
-            body = await anyio.Path(path).read_bytes()
+            raw = await anyio.Path(path).read_bytes()
         except OSError:
             return not_found(request)
+        body = self.fill(raw.decode("utf-8")).encode("utf-8")
         mtime = mtime_ms(st)
-        etag = file_etag(st.st_size, mtime)
+        etag = content_etag(body)
         headers = [("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-cache"), ("Last-Modified", http_date(mtime))]
         return not_modified(request, etag, headers) or NodeResponse(
             200, [*headers, ("ETag", etag), ("Content-Length", str(len(body)))], body

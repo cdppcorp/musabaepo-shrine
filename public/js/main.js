@@ -1654,7 +1654,7 @@ function showFortune() {
     el('p', 'slip-head', '오늘의 배포운'),
     el('p', 'slip-level', level),
     el('p', 'slip-text', text),
-    el('p', 'slip-date', `${dotDate(kstToday())} · 하루에 한 번 바뀝니다`),
+    el('p', 'slip-date', `${dotDate(kstToday())} · 뽑을 때마다 새로 나와요`),
   )
   body.append(slip)
   openSheet('배포운 상자', body, 'fortune')

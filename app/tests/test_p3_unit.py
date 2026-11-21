@@ -259,6 +259,66 @@ async def test_lock_timeout(tmp_path):
             await db.dispose()
 
 
+def test_shutdown_survives_closed_stdout(monkeypatch):
+    """표준 출력 · 오류를 받는 쪽이 닫혀도(EPIPE) SIGTERM 끝내기가 시작되는지.
+
+    리눅스에서 Node spawnSync(driver.boot)는 제한 시간이 되면 표준 입출력 파이프를 닫고 SIGTERM을 보냅니다. 예전에는
+    begin_shutdown의 '끝내는 중' 로그가 BrokenPipeError를 내서 강제 종료 타이머도 켜지 않은 채 멈췄고, 두 번째 신호의
+    '다시 받아 바로 끝냅니다'도 같은 예외로 os._exit에 닿지 못해 서버가 영영 끝나지 않았습니다 (CI 적합성 시험 s1이 멈춤).
+    """
+    import io
+    import sys
+    import types
+
+    import uvicorn
+
+    from shrine import main
+    from shrine.realtime import lifecycle
+
+    class ClosedPipe(io.TextIOBase):
+        def write(self, s):
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def flush(self):
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def close(self):  # 시험이 끝나 버려질 때 flush 예외가 'Exception ignored'로 새지 않게
+            pass
+
+    monkeypatch.setattr(sys, "stdout", ClosedPipe())
+    monkeypatch.setattr(sys, "stderr", ClosedPipe())
+    lifecycle.say("x")
+    lifecycle.say_err("x")
+    main.say("x")
+
+    timers = []
+
+    class FakeTimer:
+        def __init__(self, seconds, fn):
+            self.seconds, self.fn, self.daemon = seconds, fn, False
+
+        def start(self):
+            timers.append(self)
+
+    monkeypatch.setattr(lifecycle.threading, "Timer", FakeTimer)
+
+    async def go():
+        server = lifecycle.ShrineServer(uvicorn.Config(app=None), types.SimpleNamespace(stopping=False))
+        server.loop = asyncio.get_running_loop()
+
+        async def graceful():
+            server.should_exit = True
+
+        server._graceful = graceful
+        server.begin_shutdown("SIGTERM", 0)
+        await server._graceful_task
+        return server
+
+    server = asyncio.run(go())
+    assert [t.seconds for t in timers] == [lifecycle.SHUTDOWN_S] and timers[0].fn == server._force_exit
+    assert server.why == "SIGTERM" and server.should_exit and server.ctx.stopping
+
+
 # ── 실시간 운영자 쪽 ──
 
 

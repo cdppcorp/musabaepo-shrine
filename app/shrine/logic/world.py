@@ -31,8 +31,9 @@ TS 원본 줄 (server/world.ts, 채널 3개 판 기준):
 | ``WORLD_JSON`` | 308-337 |
 
 JS와 다르게 계산될 수 있는 곳은 모두 jsnum의 함수를 씁니다: ``Math.round``(.5 올림) → ``js_round``,
-``Math.hypot`` → ``js_hypot``, ``Math.max`` → ``js_max``. ``Math.cos`` · ``Math.sin``은 ``math``를 그대로 쓰는데,
-ring()이 쓰는 여섯 각도에서 V8(fdlibm)과 비트까지 같다는 것을 시험이 확인합니다 (tests/test_logic_world.py).
+``Math.hypot`` → ``js_hypot``, ``Math.max`` → ``js_max``. ``Math.cos`` · ``Math.sin``은 ``math``(플랫폼 libm)를 그대로 씁니다.
+ring()이 쓰는 여섯 각도에서 V8(fdlibm)과 1ulp 안이고 (Windows UCRT는 비트까지 같음, 리눅스 glibc는 4π/3의 sin이 1ulp 다름)
+반올림한 자리는 V8과 같다는 것을 시험이 확인합니다 (tests/test_logic_world.py).
 
 좌표 · 상자는 JS 객체와 같은 키 순서의 dict입니다 (Point = ``{"x","y"}``, Rect = ``{"x","y","w","h"}``).
 """

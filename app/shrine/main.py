@@ -44,7 +44,11 @@ SHUTDOWN_HOOK_S = 3
 
 
 def say(msg: str) -> None:
-    print(msg, flush=True)
+    # 받는 쪽이 닫힌 출력이면 버립니다 (끝내기 중 BrokenPipeError로 DB · Redis 닫기를 건너뛰지 않게, realtime.lifecycle.say와 같음)
+    try:
+        print(msg, flush=True)
+    except (OSError, ValueError):
+        pass
 
 
 class StartupError(RuntimeError):

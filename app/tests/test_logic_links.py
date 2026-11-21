@@ -156,11 +156,17 @@ def test_registry_read_links_domain_and_email_match_node() -> None:
         assert L.clean_email(g) == (None if bad else want["email"]), g
 
 
+#: 골든 ref의 "shrines" 입력을 뽑은 날 (Node가 Date.now()로 본 날, 한국 시간). joinedAt 기본값과 isNew를 이 날로 고정합니다.
+#: 오늘(kst_date())을 쓰면 입력이 날마다 달라져 골든 키가 어긋납니다 (뽑은 다음 날부터 "골든에 없음"으로 실패)
+GOLDEN_DAY = "2026-11-21"
+GOLDEN_NOW = 1_795_230_000_000  # 2026-11-21 12:00 KST
+
+
 def base_shrine(**over: object) -> dict:
     s = {
         "slug": "my-svc", "name": "내 서비스", "tagline": "무사배포를 기원하는 서비스입니다", "category": "devtools", "domain": "example.com",
         "url": "https://example.com/app", "operator": "운영자", "keeper": False, "paid": False, "verifiedDomain": "2026-01-02",
-        "verifiedBusiness": None, "joinedAt": kst_date(), "status": "live", "prayer": "deploy", "charm": None, "deco": ["duck"],
+        "verifiedBusiness": None, "joinedAt": GOLDEN_DAY, "status": "live", "prayer": "deploy", "charm": None, "deco": ["duck"],
         "screens": ["shot-1.png"], "capturedAt": "2026-01-02", "channel": 1, "plot": 3, "sign": "", "repo": "", "email": "",
         "emailPublic": False, "projectId": 0,
     }  # fmt: skip
@@ -184,11 +190,12 @@ def test_validate_and_public_shrine_match_node() -> None:
         {"plot": 19}, {"plot": 20}, {"plot": -1}, {"plot": 1.5}, {"plot": 0}, {"joinedAt": "2020-01-01"}, {"joinedAt": "2999-01-01"},
         {"joinedAt": "2026-02-30"}, {"tagline": "e\u0301" * 9, "sign": ""}, {"tagline": "  앞 공백 소개  ", "sign": ""},
     ]  # fmt: skip
+    assert kst_date(GOLDEN_NOW) == GOLDEN_DAY
     items = [base_shrine(**v) for v in variants]
     node = run("shrines", items=items)
     for s, want in zip(items, node, strict=True):
         assert L.validate_shrine(s) == want["errors"], s
-        assert json_stringify(L.public_shrine(s)) == want["pub"], s
+        assert json_stringify(L.public_shrine(s, GOLDEN_NOW)) == want["pub"], s
 
 
 def test_from_row_matches_node() -> None:

@@ -55,12 +55,21 @@ WS_OPTIONS: dict[str, Any] = {
 }
 
 
+def _emit(msg: str, stream: Any) -> None:
+    """한 줄 남기기. 받는 쪽이 닫힌 출력(EPIPE · 닫힌 파일)이면 버립니다: 신호 처리 · 끝내기 · 예외 처리 길이 로그 때문에 멈추면
+    안 됩니다 (예: 리눅스에서 부모가 표준 출력 파이프를 먼저 닫고 SIGTERM을 보내면 print가 BrokenPipeError를 냄)."""
+    try:
+        print(msg, file=stream, flush=True)
+    except (OSError, ValueError):
+        pass
+
+
 def say(msg: str) -> None:
-    print(msg, flush=True)
+    _emit(msg, sys.stdout)
 
 
 def say_err(msg: str) -> None:
-    print(msg, file=sys.stderr, flush=True)
+    _emit(msg, sys.stderr)
 
 
 def _fmt(exc: BaseException) -> str:
@@ -147,10 +156,11 @@ class ShrineServer(uvicorn.Server):
         self.why = why
         self.exit_code = code
         self.ctx.__dict__["stop_reason"] = why
-        say(f"[shrine] 끝내는 중 ({why}) …")
+        # 제한 시간 타이머를 먼저: 아래 어느 단계가 막혀도 SHUTDOWN_S 안에 끝납니다
         timer = threading.Timer(SHUTDOWN_S, self._force_exit)
         timer.daemon = True
         timer.start()
+        say(f"[shrine] 끝내는 중 ({why}) …")
         self.ctx.stopping = True
         assert self.loop is not None
         self._graceful_task = self.loop.create_task(self._graceful())

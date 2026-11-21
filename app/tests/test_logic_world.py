@@ -13,7 +13,7 @@ import struct
 from golden import run
 
 from shrine.logic import world as w
-from shrine.logic.jsnum import json_stringify
+from shrine.logic.jsnum import js_round, json_stringify
 
 
 def sha(text: str) -> str:
@@ -42,12 +42,24 @@ def test_world_json_without_channels_matches_pinned_inventory_hash() -> None:
     assert w.WORLD_JSON_SHA256_BEFORE_CHANNELS.startswith("5b38faeacc93ef47")
 
 
-def test_ring_trig_is_bit_identical_to_v8() -> None:
+def test_ring_trig_matches_v8() -> None:
+    """ring()이 쓰는 여섯 각도 (i / 6) · 2π의 cos · sin을 V8(fdlibm) 값과 맞춰 봅니다.
+
+    math.cos · sin은 플랫폼 libm이라 OS마다 끝자리가 다를 수 있습니다: Windows(UCRT)는 여섯 각도 모두 V8과 비트까지 같고,
+    리눅스(glibc)는 4π/3의 sin이 1ulp 다릅니다 (bfebb67ae8584ca8, V8은 …ca9). 그래서 1ulp 안인지, 그리고 그 차이가
+    ring()의 반올림 결과를 바꾸지 않는지 (V8 값으로 계산한 자리와 같은지) 봅니다. 최종 바이트는 WORLD_JSON 비교가 확인합니다.
+    """
     node = run("world")
-    for i, (c, s) in enumerate(node["trig"]):
+    v8 = [(struct.unpack(">d", bytes.fromhex(c))[0], struct.unpack(">d", bytes.fromhex(s))[0]) for c, s in node["trig"]]
+    assert len(v8) == 6
+    for i, (c, s) in enumerate(v8):
         a = (i / 6) * math.pi * 2
-        assert struct.pack(">d", math.cos(a)).hex() == c
-        assert struct.pack(">d", math.sin(a)).hex() == s
+        assert abs(math.cos(a) - c) <= math.ulp(c), (i, math.cos(a).hex(), c.hex())
+        assert abs(math.sin(a) - s) <= math.ulp(s), (i, math.sin(a).hex(), s.hex())
+    # world.ts: ...ring(PLAZA.x, PLAZA.y, 32, 22, 6, 'stump') — V8 값으로 계산한 자리와 같아야 함
+    cx, cy = w.PLAZA["x"], w.PLAZA["y"]
+    want = [{"k": "stump", "x": js_round(cx + c * 32), "y": js_round(cy + s * 22)} for c, s in v8]
+    assert json_stringify(w.ring(cx, cy, 32, 22, 6, "stump")) == json_stringify(want)
 
 
 def test_constants_match_node() -> None:

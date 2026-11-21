@@ -1,0 +1,64 @@
+# main에 올라간 커밋이 시험(check)을 통과하면 운영 서버에 배포합니다.
+#
+# - 다른 사람이 보낸 PR에서는 돌지 않습니다: check가 push(main)로 돌았고 성공했을 때만. GitHub는 PR에 비밀값을 주지 않습니다.
+# - 서버에는 SSH로 붙지만, 배포 키는 서버의 authorized_keys에서 배포 스크립트(deploy/shrine-deploy.sh) 하나만
+#   실행되게 묶어 둡니다 (command=…). 키가 새도 셸을 얻을 수 없습니다. 보내는 값은 배포할 커밋 SHA 하나뿐입니다.
+# - 손으로 다시 배포: Actions → deploy → Run workflow (그때의 main을 배포).
+# - 설정 방법: deploy/README.md '자동 배포 (GitHub Actions)'.
+#
+# 필요한 저장소 비밀값 (Settings → Secrets and variables → Actions):
+#   DEPLOY_HOST         서버 주소 (공인 IP나 도메인)
+#   DEPLOY_PORT         SSH 포트 (비우면 22)
+#   DEPLOY_USER         서버 계정
+#   DEPLOY_SSH_KEY      배포 전용 개인 키 (ed25519, 비밀번호 없음)
+#   DEPLOY_KNOWN_HOSTS  서버 호스트 키 한 줄 ("<주소> ssh-ed25519 AAAA…") — 가짜 서버에 붙지 않게
+name: deploy
+
+on:
+  workflow_run:
+    workflows: [check]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# 배포는 한 번에 하나만 (앞 배포가 끝날 때까지 기다림, 취소하지 않음)
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-24.04
+    # 저장소 Settings → Environments → production에서 '배포 전 승인'을 켜면 배포마다 한 번 더 누르게 할 수 있습니다
+    environment: production
+    timeout-minutes: 20
+    steps:
+      - name: 서버에 배포 (SSH, 배포 스크립트만 실행되는 키)
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          PORT: ${{ secrets.DEPLOY_PORT }}
+          USER_NAME: ${{ secrets.DEPLOY_USER }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -eu
+          if [ -z "$SSH_KEY" ] || [ -z "$KNOWN_HOSTS" ] || [ -z "$HOST" ] || [ -z "$USER_NAME" ]; then
+            echo "::error::배포 비밀값(DEPLOY_HOST · DEPLOY_USER · DEPLOY_SSH_KEY · DEPLOY_KNOWN_HOSTS)이 없습니다. deploy/README.md '자동 배포'를 보세요."
+            exit 1
+          fi
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          echo "배포할 커밋: $SHA"
+          ssh -i ~/.ssh/deploy_key -p "${PORT:-22}" \
+            -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            -o ConnectTimeout=20 -o ServerAliveInterval=15 \
+            "$USER_NAME@$HOST" "$SHA"

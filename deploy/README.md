@@ -149,6 +149,8 @@ $C exec -T api python -m shrine.cli schema                     # DB 구조 버�
 
 ## 5. 업데이트
 
+> GitHub Actions 자동 배포를 켜 두었다면 `main`에 머지하는 것으로 아래 순서가 저절로 돕니다 (14장). 아래는 손으로 할 때입니다.
+
 ```bash
 cd /srv/musabaepo-shrine/deploy
 C="docker compose --env-file ../.env"
@@ -617,3 +619,50 @@ curl -sI http://<도메인>/ | head -1                                          
 - 기본 `SHRINE_TRUSTED_PROXIES`는 사설 대역 전체입니다. 앞단 nginx가 어느 Docker 네트워크에 있어도 맞게 하려는 것입니다.
 - 위 접속 기록의 `remote_ip` 대역(예: `172.20.0.0/16`)만 남겨 `.env`에 적고 `$C up -d`를 해도 됩니다. 접속 기록에는 앞 3자리만 남으니 대역은 `/16` 이상으로 넉넉히 적습니다.
 - 바깥 방문자는 앞단이 값을 덮어쓰므로 IP를 꾸밀 수 없습니다. 다만 이 서버의 다른 컨테이너도 172.17.0.1:8111에 닿을 수 있어서, 그쪽이 뚫리면 IP를 꾸며 보낼 수 있다는 정도의 위험은 남습니다.
+
+## 14. 자동 배포 (GitHub Actions)
+
+`main`에 올라간 커밋이 시험(`check` 워크플로)을 통과하면 `deploy` 워크플로가 서버에 SSH로 붙어 `deploy/shrine-deploy.sh`를 돌립니다.
+
+- 그 스크립트가 하는 일
+  1. `origin/main`을 받아 그 커밋까지 빨리감기만 합니다. 서버에서 손으로 고친 파일이 있으면 멈춥니다.
+  2. 배포 전 백업을 만듭니다 (`/usr/local/bin/shrine-backup`).
+  3. `up -d --build`로 띄웁니다. `.env`의 `COMPOSE_FILE`(다른 프록시 뒤 모드)을 따릅니다.
+  4. `api`가 3분 안에 healthy가 되는지 봅니다. 아니면 실패로 끝나고 Actions에 빨간 표시가 뜹니다.
+- 다른 사람이 보낸 PR에서는 돌지 않습니다 (`check`가 `main` push로 성공했을 때만). GitHub는 PR에 비밀값을 주지 않습니다.
+- 손으로 다시 배포: Actions → deploy → Run workflow.
+
+**`main` 보호 (저장소 Settings → Rules → Rulesets 또는 Branches)**
+
+- 대상: `main`
+- 머지 · 푸시는 저장소 관리자(운영자)만: 'Restrict updates' / 'Restrict who can push'에 운영자만
+- PR 필수, 상태 검사 `check`의 두 작업(pytest · conformance) 통과 필수
+- 강제 푸시 · 삭제 금지
+
+**서버 준비 (한 번)**
+
+```bash
+cd /srv/musabaepo-shrine
+sudo install -m 755 deploy/shrine-deploy.sh /usr/local/bin/shrine-deploy
+# 배포 전 백업만 비밀번호 없이 (배포 계정이 root 백업 스크립트 하나만 부를 수 있게)
+echo "$USER ALL=(root) NOPASSWD: /usr/local/bin/shrine-backup" | sudo tee /etc/sudoers.d/musabaepo-shrine-deploy
+sudo chmod 440 /etc/sudoers.d/musabaepo-shrine-deploy && sudo visudo -c
+# 배포 전용 키: 이 스크립트만 돌게 묶어 authorized_keys에 넣음
+ssh-keygen -t ed25519 -N "" -C github-deploy-musabaepo -f ~/shrine-deploy-key
+printf 'command="SHRINE_DIR=%s /usr/local/bin/shrine-deploy",no-pty,no-port-forwarding,no-agent-forwarding,no-X11-forwarding %s\n' \
+  "$PWD" "$(cat ~/shrine-deploy-key.pub)" >> ~/.ssh/authorized_keys
+```
+
+**GitHub 비밀값 (Settings → Secrets and variables → Actions → New repository secret)**
+
+| 이름 | 값 |
+|---|---|
+| `DEPLOY_HOST` | 서버 공인 주소 |
+| `DEPLOY_PORT` | SSH 포트 (22면 비워도 됨) |
+| `DEPLOY_USER` | 서버 계정 (`echo $USER`) |
+| `DEPLOY_SSH_KEY` | `cat ~/shrine-deploy-key`의 내용 전체 (BEGIN … END 줄 포함). 넣은 뒤 서버의 이 파일은 지웁니다: `shred -u ~/shrine-deploy-key` |
+| `DEPLOY_KNOWN_HOSTS` | `echo "<서버 공인 주소> $(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)"`의 출력 한 줄 |
+
+- 확인: Actions → deploy → Run workflow → 로그 끝에 `[deploy] 배포를 마쳤습니다`.
+- 키를 바꾸거나 끊으려면 `~/.ssh/authorized_keys`에서 `github-deploy-musabaepo` 줄을 지웁니다.
+- GitHub 러너가 서버 SSH 포트에 닿아야 합니다 (공유기 포트포워딩 · 방화벽). 닿지 않으면 배포 단계가 연결 시간 초과로 실패합니다.

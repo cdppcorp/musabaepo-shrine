@@ -7,7 +7,7 @@
   사당 · 게시판 · 차단(list · status · remove · move · posts · post-* · blocks · block-ip · unblock)은 cli_ops.py.
 
 --env-file: 그 파일의 값을 환경 변수로 읽습니다 (이미 있는 환경 변수가 이깁니다, 파일이 없으면 건너뜀 —
-Node의 npm run shrine = node --env-file-if-exists=.env와 같은 규칙. 서버의 python -m shrine --env-file과 같음).
+예전 Node의 --env-file-if-exists=.env와 같은 규칙. 서버의 python -m shrine --env-file과 같음).
 
 환경 변수는 서버와 같습니다 (DATABASE_URL · TICKET_SECRET …). DB를 열 때 서버처럼 Alembic을 올립니다 (빈 DB → head).
 서버가 떠 있는 동안 넣은 사당은 서버의 사당 캐시가 30초 안에 다시 읽습니다 (Node와 같음).
@@ -70,7 +70,7 @@ async def cmd_add(config: Config, arg: str | None) -> None:
     db = await _open(config)
     try:
         if not arg:
-            fail("사용법: npm run shrine -- add <사당.json | ->")
+            fail("사용법: python -m shrine.cli add <사당.json | ->")
         try:
             raw = sys.stdin.buffer.read() if arg == "-" else open(arg, "rb").read()  # noqa: SIM115
             data = json_parse(raw.decode("utf-8", "replace"))

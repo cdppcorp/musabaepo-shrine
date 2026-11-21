@@ -11,7 +11,7 @@ unblock). shrine/cli.py의 run()이 cli_registry 다음에 여기로 넘깁니�
     uv run python -m shrine.cli block-ip <IP> <30m|12h|7d> [사유…]   IP 차단 (서버와 같은 TICKET_SECRET 필요, 최대 90d)
     uv run python -m shrine.cli unblock <번호>                차단 · 강퇴 풀기
 
-출력 · 메시지 · 종료 코드는 Node와 같습니다 (사용법 안내의 'npm run shrine --'까지). 서버가 떠 있는 동안 바꾼 사당은
+출력 · 메시지 · 종료 코드는 Node와 같습니다 (사용법 안내의 명령 이름만 python -m shrine.cli). 서버가 떠 있는 동안 바꾼 사당은
 서버의 사당 캐시가 30초 안에 다시 읽고, 차단 · 풀기는 실시간 쪽(shrine.moderation, P3)이 10초 안에 서버에 알립니다.
 한 일은 admin_log에 'cli'로 남깁니다 (block-ip · unblock · erase — Node와 같은 명령만).
 """

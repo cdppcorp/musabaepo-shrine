@@ -910,7 +910,7 @@ class VerifyResult:
 
 def _inspect_info(x: Extracted) -> DumpInfo:
     if x.manifest and x.manifest.get("format") == FORMAT and x.manifest.get("version") == 1:
-        raise BackupError("Node(SQLite) 서버가 만든 백업입니다 (version 1). Python 서버에는 되살릴 수 없습니다 (Node의 npm run backup으로)")
+        raise BackupError("Node(SQLite) 서버가 만든 백업입니다 (version 1). 이 서버에는 되살릴 수 없습니다 (Node 서버는 git 기록의 커밋 a2b1bf6까지)")
     if x.dump is None:
         raise BackupError("백업 안에 db.dump가 없습니다")
     with open(x.dump, "rb", buffering=CHUNK) as f:

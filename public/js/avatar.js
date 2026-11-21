@@ -3,7 +3,7 @@
 //   몸 · 옷 · 동작: avatar-body.js · 머리카락 · 소품: avatar-hair.js · 얼굴 · 눈 · 종족: avatar-face.js · 색표: avatar-colors.js
 // 도트 그림은 글자(재료 키)로 되어 있고, 고른 색(look)에 따라 키마다 색을 입힙니다 (avatar-colors.js 참고).
 // 한 장면은 24×40 캔버스, 발 아랫줄 y 37 · 몸 가운데 x 11. 방향 0 아래 · 1 위 · 2 왼쪽(오른쪽을 뒤집음) · 3 오른쪽.
-// 부위 순서와 개수는 서버 server/world.ts의 LOOK_SIZES와 같아야 합니다.
+// 부위 순서와 개수는 서버 app/shrine/logic/world.py의 LOOK_SIZES와 같아야 합니다.
 import * as COL from './avatar-colors.js'
 import * as BODYM from './avatar-body.js'
 import * as HAIRM from './avatar-hair.js'

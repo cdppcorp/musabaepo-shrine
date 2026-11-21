@@ -1,6 +1,7 @@
-// 적합성 시험 틀의 운전기: 같은 시험이 Node 서버(server/*.ts)와 Python 서버(app/) 어느 쪽에도 돌게 합니다.
+// 적합성 시험 틀의 운전기: 같은 시험이 Python 서버(app/)에 돌게 합니다. Node 서버(server/*.ts)용 갈래는 기록으로 남겨 둔 것이라
+// 커밋 a2b1bf6 이하(server/가 있던 때)에서만 돕니다.
 //
-//   SHRINE_TARGET=node (기본) | py
+//   SHRINE_TARGET=py (기본) | node (은퇴)
 //
 // 시험은 서버를 직접 띄우거나 DB를 직접 열지 않고 이 모듈만 씁니다. 대상마다 다른 부분은 모두 여기 있습니다.
 //   · 서버 띄우기 · 끄기 · 다시 띄우기 · 신호(SIGTERM 흉내) · 설정 검사용 한 번 띄우기(boot)
@@ -22,8 +23,9 @@ export const ROOT = resolve(HERE, '../..')
 export const APP = join(ROOT, 'app')
 export const FIXTURES = join(HERE, 'fixtures')
 
-export const TARGET = (process.env.SHRINE_TARGET || 'node').trim().toLowerCase()
-if (TARGET !== 'node' && TARGET !== 'py') throw new Error(`SHRINE_TARGET은 node 또는 py입니다 (지금: ${TARGET})`)
+export const TARGET = (process.env.SHRINE_TARGET || 'py').trim().toLowerCase()
+if (TARGET !== 'node' && TARGET !== 'py') throw new Error(`SHRINE_TARGET은 py(또는 은퇴한 node)입니다 (지금: ${TARGET})`)
+if (TARGET === 'node' && !existsSync(join(ROOT, 'server', 'main.ts'))) throw new Error('Node 서버(server/)는 저장소에서 빠졌습니다. --target node는 커밋 a2b1bf6 이하를 꺼내서 돌리세요 (git switch --detach a2b1bf6)')
 export const isPy = TARGET === 'py'
 
 /** 화면(headless Edge) 시험까지 돌릴지: --browser 또는 SHRINE_BROWSER=1 */

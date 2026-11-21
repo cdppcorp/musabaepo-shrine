@@ -1,4 +1,7 @@
-"""shrine.logic.world를 server/world.ts와 맞춰 봅니다: WORLD_JSON 바이트(sha256), 삼각함수 비트, blocked · near · nearBox 격자."""
+"""shrine.logic.world를 server/world.ts와 맞춰 봅니다: WORLD_JSON 바이트(sha256), 삼각함수 비트, blocked · near · nearBox 격자.
+
+기준값은 tests/data/golden의 Node 골든(git 기록 a2b1bf6까지의 Node 서버에서 뽑음)입니다.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +10,7 @@ import math
 import random
 import struct
 
-from node_ref.runner import run
+from golden import run
 
 from shrine.logic import world as w
 from shrine.logic.jsnum import json_stringify

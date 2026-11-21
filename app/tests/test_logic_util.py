@@ -1,10 +1,10 @@
-"""shrine.logic.util(한국 시간 날짜)을 server/util.ts와 맞춰 봅니다."""
+"""shrine.logic.util(한국 시간 날짜)을 예전 Node server/util.ts와 맞춰 봅니다. 기준값은 tests/data/golden의 Node 골든(git 기록 a2b1bf6까지의 Node 서버에서 뽑음)입니다."""
 
 from __future__ import annotations
 
 import random
 
-from node_ref.runner import run
+from golden import run
 
 from shrine.logic import util as U
 

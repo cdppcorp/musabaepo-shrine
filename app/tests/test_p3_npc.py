@@ -3,45 +3,24 @@
   · blocked: 칸 색인으로 빨리 하는 판정이 world.blocked와 같은지 (격자 · 무작위 실수 점 · 경계)
   · 세계: 채널 1에 3명 · 2에 2명 · 3에는 없음, 사람이 들어오면 비켜 줌, 메시지는 사람이 있을 때만(core._Host),
           목적지는 자기 채널 사당만 · 확률 · 위치 0.1 반올림
-node_ref는 test_p3_unit이 JS Number() · ?ch= 비교에 씁니다 (node가 없으면 그 시험만 건너뜀).
+node_ref는 test_p3_unit이 JS Number() · ?ch= 비교에 씁니다. 기준값은 tests/data/golden의 Node 골든(git 기록 a2b1bf6까지의 Node 서버에서 뽑음)입니다.
 """
 
 from __future__ import annotations
 
-import json
 import math
-import os
 import random
-import shutil
-import subprocess
-import tempfile
-from pathlib import Path
 
 import pytest
 
+from golden import golden
 from shrine import npc
-from shrine.logic.jsnum import json_stringify
-from shrine.logic.world import AI_SHRINES, MAP_H, MAP_W, PLOTS, REGISTRY_FRONT, SEATS, SMOKE_FRONT, TEMPLE_FRONT, TREND_FRONT
+from shrine.logic.world import MAP_H, MAP_W, PLOTS, SEATS
 from shrine.logic.world import blocked as world_blocked
 
-HERE = Path(__file__).resolve().parent
-REF = HERE / "p3_ref.mjs"
-NODE = shutil.which("node")
-
-
 def node_ref(payload: dict) -> str:
-    if NODE is None or os.environ.get("SHRINE_NO_NODE"):
-        pytest.skip("node가 없어 Node 기준값과 맞춰 볼 수 없습니다")
-    with tempfile.TemporaryDirectory(prefix="shrine-p3-ref-") as data:
-        env = {k: v for k, v in os.environ.items() if k.upper() in ("PATH", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE", "HOME")}
-        env.update(DATA_DIR=data, NODE_ENV="development", GITHUB_CHECK="off")
-        r = subprocess.run(
-            [NODE, "--disable-warning=ExperimentalWarning", str(REF)], input=json.dumps(payload).encode(),
-            capture_output=True, env=env, timeout=300,
-        )  # fmt: skip
-    if r.returncode != 0:
-        raise RuntimeError(r.stderr.decode("utf-8", "replace"))
-    return r.stdout.decode("utf-8")
+    """예전 tests/p3_ref.mjs(server/npc.ts · world.ts)의 출력 글자."""
+    return golden("p3", payload)
 
 
 # ── blocked ──

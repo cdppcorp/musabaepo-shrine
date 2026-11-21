@@ -1,7 +1,7 @@
 """P2b 시험 도구: 시험마다 새 PostgreSQL DB + 비운 Redis DB 번호 + 임시 DATA_DIR로 AppContext를 만듭니다.
 
-PostgreSQL · Redis가 없으면 건너뜁니다 (SHRINE_TEST_PG, SHRINE_TEST_REDIS_BASE — 기본 개발용 컨테이너, Redis는 DB 14번 (P2b HTTP 비교 시험과 같은 번호, 같은 pytest에서 차례로 돎):
-적합성 시험은 1~12, app pytest의 다른 시험은 13, P2a 비교 시험은 15).
+PostgreSQL · Redis가 없으면 건너뜁니다 (SHRINE_TEST_PG, SHRINE_TEST_REDIS_BASE — 기본 개발용 컨테이너, Redis는 DB 14번:
+적합성 시험은 1~12, app pytest의 다른 시험은 13).
 """
 
 from __future__ import annotations

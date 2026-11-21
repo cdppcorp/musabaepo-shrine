@@ -1,4 +1,4 @@
-# PR · push마다 서버 타입 검사와 화면 코드 문법 검사를 돌립니다.
+# PR · push마다 Python 서버 시험(pytest) · 화면 코드 문법 검사 · 적합성 시험을 돌립니다.
 name: check
 
 on:
@@ -9,17 +9,74 @@ on:
 permissions:
   contents: read
 
+# 시험이 찾는 기본 주소(개발용 컨테이너와 같은 포트)로 서비스를 엽니다: PostgreSQL 127.0.0.1:55432 (postgres/dev), Redis 127.0.0.1:56379
 jobs:
-  check:
+  pytest:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: dev
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 56379:6379
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 20
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          working-directory: app
+      - name: 의존성
+        working-directory: app
+        run: uv sync --frozen
+      - name: pytest
+        working-directory: app
+        run: uv run pytest -q
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: 화면 코드 문법 검사
+        run: for f in public/js/*.js public/admin/*.js; do node --check "$f"; done
+
+  conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: dev
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 56379:6379
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          working-directory: app
+      - name: Python 의존성
+        working-directory: app
+        run: uv sync --frozen
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
-      - name: 서버 타입 검사
-        run: npx tsc --noEmit -p .
-      - name: 화면 코드 문법 검사
-        run: for f in public/js/*.js; do node --check "$f"; done
+      - name: Node 의존성 (ws)
+        run: npm ci
+      - name: 적합성 시험 (대상 py)
+        run: npm run test:conformance -- --target py

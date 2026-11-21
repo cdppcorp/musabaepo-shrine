@@ -1,72 +1,177 @@
-# 무사배포 기원소 단독 서버 구성 (앱 + Caddy). 다른 서비스와 코드 · DB를 나눠 쓰지 않습니다.
-#   cp .env.example .env  (값 채우기)  →  cd deploy && mkdir -p backups && sudo chown 1000:1000 backups
-#   →  docker compose up -d --build
+# 무사배포 기원소 단독 서버 구성 (api + PostgreSQL + Redis + Caddy). 다른 서비스와 코드 · DB를 나눠 쓰지 않습니다.
+#
+#   cp .env.example .env  (값 채우기, chmod 600)  →  cd deploy && mkdir -p backups && sudo chown 1000:1000 backups
+#   →  docker compose --env-file ../.env up -d --build
+#   (--env-file: 아래 ${POSTGRES_PASSWORD} · ${APP_DB_PASSWORD} · Caddy의 ${SHRINE_DOMAIN} 같은 값을 채우는 데 씁니다.
+#    컨테이너 환경 변수는 각 서비스의 env_file · environment가 따로 넣습니다)
+#   .env에는 POSTGRES_PASSWORD · APP_DB_PASSWORD가 꼭 있어야 합니다 (16진 무작위: openssl rand -hex 24 — URL에 그대로 들어가므로 @ : / 금지)
+#     POSTGRES_PASSWORD   PostgreSQL 관리자(shrine, 슈퍼유저). 컨테이너 안에서 백업 · 복구할 때만 씀
+#     APP_DB_PASSWORD     앱 전용 계정(shrine_app, 슈퍼유저 아님 · DB 주인). api가 이 계정으로 붙음
 # 첫 배포 · 업데이트 · 롤백 · 백업 · 복구 · 서버 옮기기는 deploy/README.md에 적어 두었습니다.
+#
+# 앱 포트는 밖으로 열지 않음(Caddy만 reverse_proxy shrine:3300 → api 서비스의 별칭 'shrine'), 읽기 전용 · 권한 최소 · 메모리 상한 · 로그 10MB×5.
+# 프로젝트 이름은 'deploy'로 고정합니다 (예전 Node 구성의 폴더 이름과 같아서 caddy-data 인증서 볼륨 deploy_caddy-data를 그대로 이어 씀).
+#
+# Redis는 디스크에 쓰지 않습니다 (RDB 저장 · AOF 모두 끔, 볼륨 없음).
+#   담는 것: 요청 제한 횟수 · 잠금 · 신고처럼 짧게만 필요한 상태뿐이고, 모든 키에 만료가 있습니다.
+#   다시 띄우면 비고, 그날 IP 해시가 디스크에 남지 않습니다 (개인정보 처리방침).
+#   오래 남아야 하는 것(PIN 잠금 pin_locks, 차단 blocks 등)은 PostgreSQL에 있습니다.
+#   메모리가 차면 키를 버리지 않고(noeviction) 새로 쓰기를 거절합니다: 잠금 · 횟수 같은 보안 키가 밀려나지 않게.
+#
+# 보안: 앱은 슈퍼유저가 아닌 shrine_app으로 DB에 붙고(postgres-init/), 백업 폴더는 앱에서 읽기만 하며
+#   (만들기 · 정리는 backup 서비스), Caddy에는 .env 전체가 아니라 SHRINE_DOMAIN · ACME_EMAIL만 넘깁니다.
 
-# 로그: Docker 기본(json-file)은 크기 제한이 없습니다. 컨테이너마다 10MB × 5개까지만 둡니다.
+name: deploy
+
 x-logging: &logging
   driver: json-file
   options:
     max-size: "10m"
     max-file: "5"
 
+x-hardening: &hardening
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
 services:
-  shrine:
-    build: ..
-    # 빌드한 이미지 이름. 롤백할 때는 이전 이미지에 이 이름을 다시 붙입니다 (README '롤백')
-    image: musabaepo-shrine:latest
+  api:
+    build:
+      context: ..
+      dockerfile: app/Dockerfile
+    image: musabaepo-shrine-api:latest
     restart: unless-stopped
-    # 신호 전달 · 좀비 프로세스 정리 (헬스 체크가 wget을 자주 띄웁니다)
     init: true
     env_file: ../.env
     environment:
       HOST: 0.0.0.0
       PORT: 3300
-      DATA_DIR: /app/data
-      BACKUP_DIR: /app/backups
+      DATA_DIR: /data
+      # 백업 tar (python -m shrine.backup). DB 덤프는 postgres 컨테이너의 pg_dump가 만들어 표준 입력으로 넘깁니다 (README)
+      BACKUP_DIR: /backups
       # 앱은 Caddy 뒤에서만 받습니다 (포트를 바깥에 열지 않음)
       TRUST_PROXY: "true"
+      # 슈퍼유저가 아닌 앱 전용 계정 (postgres-init/10-app-role.sh가 첫 실행에서 만듦)
+      DATABASE_URL: postgresql://shrine_app:${APP_DB_PASSWORD:?../.env에 APP_DB_PASSWORD를 넣고 --env-file ../.env로 실행하세요}@postgres:5432/shrine
+      REDIS_URL: redis://redis:6379/0
+    networks:
+      default:
+        # Caddyfile이 reverse_proxy shrine:3300으로 찾습니다
+        aliases:
+          - shrine
     volumes:
-      - shrine-data:/app/data
-      # 백업(server/backup.ts)이 쌓이는 곳 = 호스트의 deploy/backups. 컨테이너 사용자(1000)가 쓸 수 있어야 합니다
-      - ./backups:/app/backups
+      # 올린 이미지 (DATA_DIR/uploads)
+      - api-data:/data
+      # 백업 (호스트 폴더 deploy/backups, 주인은 uid 1000: sudo chown 1000:1000 backups)
+      # 읽기 전용: 앱이 뚫려도 백업을 지우거나 바꿔 넣지 못하게. 만들기 · 정리는 아래 backup 서비스가 합니다
+      - ./backups:/backups:ro
     expose:
       - "3300"
-    # 헬스 체크는 Dockerfile의 HEALTHCHECK(GET /healthz)를 씁니다
-    # 강화: 코드 · 시스템은 읽기 전용, 쓰는 곳은 데이터 · 백업 볼륨과 /tmp뿐. 권한 상승 없음
+    # 헬스 체크는 Dockerfile의 HEALTHCHECK(python -m shrine.healthcheck → GET /healthz)
     read_only: true
     tmpfs:
       - /tmp:size=64m
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
+    <<: *hardening
     mem_limit: 512m
     cpus: 1.0
     pids_limit: 200
-    # 종료 신호를 받고 접속 정리 · DB 닫기를 마칠 시간
+    # uvicorn: 처리 중 요청 · WebSocket 정리 최대 5초 + 끝내기 훅
     stop_grace_period: 15s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging: *logging
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    # 이미지의 postgres 사용자(70)로 바로 돕니다 (root로 시작해 권한을 바꾸는 단계가 없어 cap을 모두 뺄 수 있음)
+    user: "70:70"
+    environment:
+      POSTGRES_DB: shrine
+      POSTGRES_USER: shrine
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?../.env에 POSTGRES_PASSWORD를 넣고 --env-file ../.env로 실행하세요}
+      # 첫 실행에서 만드는 계정의 비밀번호 방식
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+      # 앱 전용 계정 shrine_app의 비밀번호 (첫 실행에서 postgres-init/10-app-role.sh가 씀)
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?../.env에 APP_DB_PASSWORD를 넣고 --env-file ../.env로 실행하세요}
+    volumes:
+      # 첫 실행(빈 볼륨)에서만: shrine_app 만들기 · DB 주인 넘기기 · 슈퍼유저 TCP 접속 거절
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+      # 이 볼륨이 DB 전부입니다. 백업은 호스트 cron: 이 컨테이너의 pg_dump → backup 서비스의 python -m shrine.backup (deploy/README.md 7장)
+      - pg-data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shrine -d shrine -h 127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    shm_size: 128m
+    <<: *hardening
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 200
+    # 끝낼 때 체크포인트를 마칠 시간
+    stop_grace_period: 30s
+    logging: *logging
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # 이미지의 redis 사용자(999)로 바로 돕니다
+    user: "999:1000"
+    # 디스크에 쓰지 않음 (맨 위 설명). 메모리 64MB를 넘으면 키를 버리지 않고 새 쓰기를 거절합니다 (noeviction:
+    # 로그인 · PIN 잠금 같은 보안 키가 밀려나 풀리지 않게. 모든 키에 만료가 있어 저절로 비워집니다)
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - 64mb
+      - --maxmemory-policy
+      - noeviction
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    read_only: true
+    tmpfs:
+      # 이미지가 /data를 볼륨으로 선언해서, 이름 없는 볼륨이 생기지 않게 메모리로 덮습니다 (쓰는 일은 없음)
+      - /data:size=8m,uid=999,gid=1000
+    expose:
+      - "6379"
+    <<: *hardening
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 100
     logging: *logging
 
   caddy:
-    # 2.11 이상: 접속 기록을 날짜로 넘기는 roll_interval이 있고, Caddyfile의 오타를 조용히 넘기지 않습니다
     image: caddy:2.11
     restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"
-      # HTTP/3 (QUIC)
       - "443:443/udp"
     volumes:
+      # reverse_proxy shrine:3300 (api 서비스의 별칭)
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      # 인증서 · ACME 계정. 서버를 옮길 때 같이 옮깁니다 (재발급 횟수 제한)
       - caddy-data:/data
       - caddy-config:/config
-      # 접속 기록 (IP 일부 가림, 30일 안에 지움: Caddyfile 'log'). 서버를 옮길 때 가져가지 않습니다
       - caddy-logs:/var/log/caddy
-    # Caddyfile의 {$SHRINE_DOMAIN} · {$ACME_EMAIL}
-    env_file: ../.env
-    # 80 · 443을 여는 권한만 남깁니다
+    # Caddyfile의 {$SHRINE_DOMAIN} · {$ACME_EMAIL}만 넘깁니다 (.env의 비밀 값은 Caddy에 주지 않음).
+    # 값은 --env-file ../.env에서 채웁니다 (비어 있으면 Caddy가 시작하지 않음: Caddyfile 맨 위)
+    environment:
+      SHRINE_DOMAIN: ${SHRINE_DOMAIN:-}
+      ACME_EMAIL: ${ACME_EMAIL:-}
     cap_drop:
       - ALL
     cap_add:
@@ -77,12 +182,42 @@ services:
     cpus: 0.5
     pids_limit: 200
     depends_on:
-      shrine:
+      api:
         condition: service_healthy
     logging: *logging
 
+  # 백업 만들기 · 정리 · 검사 전용 (늘 떠 있지 않음, profile tools: up에 끼지 않고 run --rm으로만).
+  #   $C run --rm --no-deps -T backup create --dump -     ($C = docker compose --env-file ../.env)
+  # 백업 폴더에 쓸 수 있는 것은 이 컨테이너뿐입니다. 네트워크 없음 · .env 비밀 값 없음 · 이미지 폴더는 읽기만.
+  # BACKUP_SIGNING_KEY(선택)는 .env가 아니라 cron 스크립트의 셸 환경에서 받습니다 (deploy/README.md 7장 '서명')
+  backup:
+    image: musabaepo-shrine-api:latest
+    profiles: ["tools"]
+    init: true
+    entrypoint: ["python", "-m", "shrine.backup"]
+    command: ["list"]
+    environment:
+      DATA_DIR: /data
+      BACKUP_DIR: /backups
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+      BACKUP_MAX_DAYS: ${BACKUP_MAX_DAYS:-14}
+      BACKUP_SIGNING_KEY: ${BACKUP_SIGNING_KEY:-}
+    network_mode: none
+    volumes:
+      - api-data:/data:ro
+      - ./backups:/backups
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    <<: *hardening
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 100
+    logging: *logging
+
 volumes:
-  shrine-data:
+  api-data:
+  pg-data:
   caddy-data:
   caddy-config:
   caddy-logs:

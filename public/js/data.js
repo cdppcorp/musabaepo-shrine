@@ -1,4 +1,4 @@
-// 화면에서 쓰는 고정 데이터. 말풍선 개수는 서버 world.ts의 BUBBLE_COUNT와 같아야 합니다.
+// 화면에서 쓰는 고정 데이터. 말풍선 개수는 서버 app/shrine/logic/world.py의 BUBBLE_COUNT와 같아야 합니다.
 // 캐릭터 꾸미기 부위는 avatar.js에 있습니다.
 
 /** 기원 6종 (D5) */

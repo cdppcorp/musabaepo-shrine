@@ -150,7 +150,7 @@ function showFootContact() {
 
 /**
  * 지금 채널에서 보이는 사당의 채널: 1~3번은 그대로, 그 밖(정원이 차서 생기는 넘침 채널)과 연결 전에는 1번 채널.
- * 서버 world.ts의 shrineChannelOf와 같은 규칙입니다.
+ * 서버 app/shrine/logic/world.py의 shrine_channel_of와 같은 규칙입니다.
  */
 function shrineChannel(ch = st.channel) {
   const n = st.world?.channels ?? 3

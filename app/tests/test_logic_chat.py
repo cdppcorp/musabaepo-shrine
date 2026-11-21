@@ -1,4 +1,4 @@
-"""shrine.logic.chat를 server/chat.ts(+ registry.ts · ops.ts)와 맞춰 봅니다.
+"""shrine.logic.chat를 예전 Node server/chat.ts(+ registry.ts · ops.ts)와 맞춰 봅니다. 기준값은 tests/data/golden의 Node 골든(git 기록 a2b1bf6까지의 Node 서버에서 뽑음)입니다.
 
 - tests/data/chat_corpus.json (손으로 고른 384개: 한글 · 자모 · 이모지 · ZWJ · 보이지 않는 글자 · 방향 글자 · 제어 문자 · 링크 ·
   이메일 · 전화번호 · 금칙어 · 길이 · 서로게이트 · 문자열이 아닌 값)
@@ -13,7 +13,7 @@ import random
 from pathlib import Path
 
 import pytest
-from node_ref.runner import run
+from golden import run
 
 from shrine.logic.ada_idna import _V8_CCC
 from shrine.logic.chat import (

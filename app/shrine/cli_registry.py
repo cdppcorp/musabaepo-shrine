@@ -12,7 +12,7 @@
 
 서버와 같은 환경 변수를 읽고(설정이 틀리면 서버처럼 1로 끝남, 예: RETENTION_DAYS=-1), DB를 열 때 Alembic을 올립니다.
 Redis가 닿지 않으면 Redis 없이 합니다 (업로드 소유 기록 · PIN 틀린 기록을 지우는 일만 빠짐).
-메시지 · 출력 모양 · 종료 코드는 Node와 같습니다 (사용법 안내의 'npm run shrine --'까지).
+메시지 · 출력 모양 · 종료 코드는 Node와 같습니다 (사용법 안내의 명령 이름만 python -m shrine.cli).
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from .logic.util import now_ms
 from .storage import UploadStore
 
 #: 사용법 안내의 명령 모양: Node와 같은 글자 (cli.py add도 같음)
-PROG = "npm run shrine --"
+PROG = "python -m shrine.cli"
 
 Handler = Callable[[AppContext, list[str]], Awaitable[None]]
 

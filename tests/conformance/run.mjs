@@ -1,9 +1,9 @@
 // 적합성 시험 실행기: 묶음을 하나씩(포트가 고정이라 동시에는 안 됨) 돌리고 묶음마다 PASS/FAIL을 셉니다.
 //
-//   node tests/conformance/run.mjs [--target node|py] [--browser] [--only s1,admin] [--verbose] [--clean]
-//   npm run test:conformance -- --target py
+//   node tests/conformance/run.mjs [--target py] [--browser] [--only s1,admin] [--verbose] [--clean]
+//   npm run test:conformance
 //
-//   --target   시험 대상 (기본: SHRINE_TARGET 또는 node)
+//   --target   시험 대상 (기본: SHRINE_TARGET 또는 py). node는 은퇴: Node 서버가 있던 커밋 a2b1bf6 이하에서만 돕니다
 //   --browser  화면 시험(headless Edge)까지: admin 화면 사진 10개 + edge 묶음 43개
 //   --only     이 묶음만 (쉼표로)
 //   --verbose  PASS 줄까지 모두 보여 줌 (기본: FAIL · SKIP · 예외만, 전체는 작업 폴더의 <묶음>.log)
@@ -14,7 +14,7 @@
 // 대상이 갖지 않은 저장소 특성(driver.caps) 때문에 셀 수 없는 검사는 SKIP으로 셉니다 (py: SQLite WAL · 옛 SQLite DB).
 import { spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { createWriteStream, mkdirSync } from 'node:fs'
+import { createWriteStream, existsSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -25,9 +25,13 @@ const opt = name => {
   const i = argv.indexOf(name)
   return i >= 0 ? argv[i + 1] : undefined
 }
-const target = (opt('--target') || process.env.SHRINE_TARGET || 'node').toLowerCase()
+const target = (opt('--target') || process.env.SHRINE_TARGET || 'py').toLowerCase()
 if (target !== 'node' && target !== 'py') {
-  console.error('--target은 node 또는 py입니다')
+  console.error('--target은 py(또는 은퇴한 node)입니다')
+  process.exit(2)
+}
+if (target === 'node' && !existsSync(join(HERE, '..', '..', 'server', 'main.ts'))) {
+  console.error('Node 서버(server/)는 저장소에서 빠졌습니다. --target node는 커밋 a2b1bf6 이하를 꺼내서 돌리세요 (git switch --detach a2b1bf6)')
   process.exit(2)
 }
 const browser = flag('--browser')

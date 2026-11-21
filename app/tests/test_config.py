@@ -1,22 +1,15 @@
-"""설정 검사: Node(server/config.ts)와 같은 메시지 · 같은 순서 · 같은 값인지, 그리고 새 서버에만 있는 값(DB · Redis).
+"""설정 검사: 예전 Node(server/config.ts)와 같은 메시지 · 같은 순서 · 같은 값인지, 그리고 새 서버에만 있는 값(DB · Redis).
 
-Node 비교는 server/config.ts를 그 환경 변수로 직접 불러 stderr · 결과 값을 받아 봅니다 (node가 없으면 건너뜀).
+Node 비교: 그 환경 변수로 server/config.ts를 불렀을 때의 stderr · 결과 값. 기준값은 tests/data/golden의 Node 골든(git 기록 a2b1bf6까지의 Node 서버에서 뽑음)입니다.
 """
 
 from __future__ import annotations
 
-import json
-import os
-import shutil
-import subprocess
-from pathlib import Path
-
 import pytest
 
+from golden import golden
 from shrine.config import config_or_exit, is_placeholder_host, load_config, secret_weakness
 
-REPO = Path(__file__).resolve().parents[2]
-NODE = shutil.which("node")
 DB = "postgresql://shrine:dev@127.0.0.1:5432/shrine"
 STRONG = "f3a9c1e07b5d2846af19c3e5d7b02a6e"  # 무작위 16진 (시험용, 실제 비밀 아님)
 PROD_OK = {
@@ -123,35 +116,12 @@ def python_output(env: dict[str, str]) -> tuple[str, dict | None]:
     return "\n".join(f"[shrine] 설정 경고: {w}" for w in r.warnings), values
 
 
-NODE_SCRIPT = """
-const m = await import(process.argv[1]);
-const c = m.config;
-const out = { port: c.port, host: c.host, basePath: c.basePath, publicOrigin: c.publicOrigin, trustProxy: c.trustProxy,
-  dataDir: c.dataDir, turnstileSiteKey: c.turnstileSiteKey, turnstileSecret: c.turnstileSecret,
-  allowIndexing: c.allowIndexing, freeChat: c.freeChat, boardOpen: c.boardOpen, contactEmail: c.contactEmail,
-  candleCooldownMs: c.candleCooldownMs, wsMaxPerIp: c.wsMaxPerIp, adminPassword: c.adminPassword, adminIps: c.adminIps,
-  isProd: m.isProd, devSkipHumanCheck: m.devSkipHumanCheck };
-if (process.env.TICKET_SECRET) out.ticketSecret = c.ticketSecret;
-process.stdout.write(JSON.stringify(out));
-"""
-
-
 def node_output(env: dict[str, str]) -> tuple[str, dict | None]:
-    base = {k: v for k, v in os.environ.items() if k.upper() in ("PATH", "SYSTEMROOT", "SYSTEMDRIVE", "TEMP", "TMP", "HOME", "USERPROFILE")}
-    url = (REPO / "server" / "config.ts").as_uri()
-    p = subprocess.run(
-        [NODE, "--disable-warning=ExperimentalWarning", "--input-type=module", "-e", NODE_SCRIPT, url],
-        env={**base, **env},
-        capture_output=True,
-        timeout=30,
-    )
-    err = p.stderr.decode("utf-8").rstrip("\n")
-    if p.returncode != 0:
-        return err, None
-    return err, json.loads(p.stdout.decode("utf-8"))
+    """server/config.ts를 이 환경 변수로 불렀을 때 (stderr, 값 | 실패면 None)."""
+    err, values = golden("config", env)
+    return err, values
 
 
-@pytest.mark.skipif(NODE is None, reason="node가 없어 Node 설정 검사와 맞춰 볼 수 없습니다")
 @pytest.mark.parametrize(("name", "env"), CASES, ids=[c[0] for c in CASES])
 def test_matches_node(name: str, env: dict[str, str]):
     node_err, node_values = node_output(env)

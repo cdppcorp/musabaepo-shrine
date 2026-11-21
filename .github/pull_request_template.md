@@ -8,7 +8,7 @@
 
 ## 확인한 것
 
-- [ ] `npm run check` 통과
+- [ ] `cd app && uv run pytest` 통과 (서버 동작을 바꿨다면 `npm run test:conformance`도)
 - [ ] 로컬에서 띄워 직접 확인함 (화면이 바뀌면 바꾸기 전 · 후 스크린샷 첨부)
 - [ ] 비밀번호 · 키 · 개인정보가 코드 · 커밋 · 스크린샷에 없음
 - [ ] [CONTRIBUTING.md](../CONTRIBUTING.md)의 "기여한 내용의 권리"에 동의함

@@ -1,5 +1,7 @@
 node_modules
-data
+# 개발 데이터 폴더 (DATA_DIR: 저장소 루트 data/ 또는 app/에서 띄웠을 때의 app/data/)
+/data/
+/app/data/
 .env
 .env.*
 !.env.example

@@ -7,7 +7,7 @@ Ada는 Apache-2.0 / MIT 이중 라이선스이고, 표 내용은 유니코드 �
 
     curl -L -o singleheader.zip https://github.com/ada-url/ada/releases/download/v<판>/singleheader.zip
     unzip singleheader.zip ada.cpp ada.h
-    uv run python tests/node_ref/gen_ada_tables.py ada.cpp shrine/logic/_ada_tables.py
+    uv run python tools/gen_ada_tables.py ada.cpp shrine/logic/_ada_tables.py
 
 시험(tests/test_logic_links.py)이 코드 포인트 전체를 Node와 맞춰 보므로, 표가 어긋나면 그 시험이 실패합니다.
 """
@@ -111,7 +111,7 @@ def main(src_path: str, out_path: str) -> None:
         assert len(tables[k][1]) == n, (k, len(tables[k][1]), n)
 
     lines = [
-        '"""자동 생성: tests/node_ref/gen_ada_tables.py — 손으로 고치지 마세요.',
+        '"""자동 생성: tools/gen_ada_tables.py — 손으로 고치지 마세요.',
         "",
         f"Ada {ver} (Node 24 내장 URL 파서)의 IDNA {idna_ver.group(1) if idna_ver else '?'} 매핑 표 · NFC 정규화 표 · 양방향 표 · ContextJ 표.",
         "Ada는 Apache-2.0 / MIT 이중 라이선스입니다 (https://github.com/ada-url/ada). 값은 유니코드 데이터입니다.",

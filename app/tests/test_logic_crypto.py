@@ -1,19 +1,22 @@
 """shrine.logic.crypto를 Node(security.ts · moderation.ts · admin.ts · registry.ts)와 양쪽으로 맞춰 봅니다.
 
 Node가 서명 · 해시한 값을 Python이 검증하고, Python이 만든 값을 Node가 검증합니다 (고정 TICKET_SECRET · ADMIN_PASSWORD).
+기준값은 tests/data/golden의 Node 골든(git 기록 a2b1bf6까지의 Node 서버에서 뽑음)입니다. 시각은 NOW로 고정합니다 (골든을 뽑을 때 Node의 Date.now도 NOW).
 """
 
 from __future__ import annotations
 
 import hmac
 import random
-import time
 
-from node_ref.runner import ADMIN_PASSWORD, TICKET_SECRET, run
+from golden import ADMIN_PASSWORD, TICKET_SECRET, run
 
 from shrine.logic import crypto as C
 from shrine.logic.jsnum import json_stringify
 from shrine.logic.jsstr import utf8_encode
+
+
+NOW = 1_795_000_000_000  # 2026-11-18 (고정 시각)
 
 
 def js(v: object) -> str | None:
@@ -39,7 +42,7 @@ def test_lenient_base64url_decode_matches_node() -> None:
 
 def make_ticket(**over: object) -> dict:
     t = {"sid": "6f1c2d1e-0a3b-4c5d-8e9f-0123456789ab", "look": [0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3], "nick": "새벽의 러버덕 42",
-         "exp": int(time.time() * 1000) + 3600_000}  # fmt: skip
+         "exp": NOW + 3600_000}  # fmt: skip
     t.update(over)
     return t
 
@@ -51,9 +54,9 @@ def signed_body(text: str) -> str:
 
 
 def test_tickets_cross_sign_and_verify() -> None:
-    now = int(time.time() * 1000)
+    now = NOW
     tickets = [make_ticket(), make_ticket(nick="🙏 무사한 고양이 10"), make_ticket(exp=now + 5), make_ticket(look=[5, 5, 5, 5, 15, 11, 8, 11, 4, 7, 5, 9])]
-    node = run("tickets", sign=tickets, verify=[])
+    node = run("tickets", sign=tickets, verify=[], now=NOW)
     py_signed = [C.sign_ticket(t, TICKET_SECRET) for t in tickets]
     assert node["signed"] == py_signed  # 같은 바이트
     good = py_signed[0]
@@ -76,9 +79,9 @@ def test_tickets_cross_sign_and_verify() -> None:
         "a=1; shrine_ticket=x; b", " shrine_ticket = y ; shrine_ticket=z", "=v; k=", "__proto__=x; a=b", "a=b=c", ";;;", "\u3000a=b\u3000",
         "a\u0085=b", "",
     ]
-    node = run("tickets", sign=[], verify=variants + cookies)
+    node = run("tickets", sign=[], verify=variants + cookies, now=NOW)
     for raw, want in zip(variants + cookies, node["verified"], strict=True):
-        assert js(C.verify_ticket(raw, TICKET_SECRET)) == js(want), ascii(raw)
+        assert js(C.verify_ticket(raw, TICKET_SECRET, now=NOW)) == js(want), ascii(raw)
     for raw, want in zip(variants + cookies, node["cookies"], strict=True):
         assert C.parse_cookies(raw) == want, ascii(raw)
 
@@ -114,10 +117,13 @@ def test_block_keys_match_node() -> None:
 
 def test_admin_keys_sessions_and_cookies_cross_check() -> None:
     keys = C.admin_keys(TICKET_SECRET, ADMIN_PASSWORD)
-    now = int(time.time() * 1000)
+    now = NOW
     sid = "AbCdEfGhIjKlMnOpQrStUvWx"
-    sessions = [{"sid": sid, "iat": now, "exp": now + C.SESSION_MS}, C.new_session(now), {"sid": sid, "iat": 1, "exp": 2}]
-    node0 = run("admin", sessions=sessions, raws=[], ips=[], passwords=[], hosts=[])
+    fresh = C.new_session(now)
+    assert len(fresh["sid"]) == 24 and fresh["exp"] == now + C.SESSION_MS
+    sessions = [{"sid": sid, "iat": now, "exp": now + C.SESSION_MS}, {**fresh, "sid": C.b64url(bytes(range(18)))},
+                {"sid": sid, "iat": 1, "exp": 2}]  # fmt: skip
+    node0 = run("admin", sessions=sessions, raws=[], ips=[], passwords=[], hosts=[], now=NOW)
     assert node0["enabled"] is True
     assert node0["keys"] == {"pw": keys.pw_digest.hex(), "session": keys.session_key.hex(), "log": keys.log_key.hex()}
     assert node0["signed"] == [C.sign_session(s, keys) for s in sessions]
@@ -143,9 +149,9 @@ def test_admin_keys_sessions_and_cookies_cross_check() -> None:
     passwords = [ADMIN_PASSWORD, ADMIN_PASSWORD + " ", "", None, 5, "x" * 1025, ADMIN_PASSWORD.upper()]
     hosts = ["localhost", "localhost:3300", "LOCALHOST", "a.localhost", "127.0.0.1", "127.0.0.1:80", "[::1]", "[::1]:443", "::1", "example.com",
              "localhost.", "127.0.0.2", None, "", "xlocalhost"]  # fmt: skip
-    node = run("admin", sessions=[], raws=raws, ips=IPS, passwords=passwords, hosts=hosts)
+    node = run("admin", sessions=[], raws=raws, ips=IPS, passwords=passwords, hosts=hosts, now=NOW)
     for raw, want in zip(raws, node["read"], strict=True):
-        assert js(C.read_session(raw, keys)) == js(want), ascii(raw)
+        assert js(C.read_session(raw, keys, now=NOW)) == js(want), ascii(raw)
     for ip, h, n in zip(IPS, node["ipHash"], node["normIp"], strict=True):
         assert C.norm_admin_ip(ip) == n and C.admin_ip_hash(ip, keys) == h, ascii(ip)
     for pw, want in zip(passwords, node["password"], strict=True):
@@ -153,11 +159,12 @@ def test_admin_keys_sessions_and_cookies_cross_check() -> None:
     for h, cookie, loop in zip(hosts, node["cookie"], node["loopback"], strict=True):
         assert C.session_cookie(h, "v", 28800) == cookie and C.is_loopback_host(h) is loop, h
     # 로그아웃 목록
-    assert C.read_session(good, keys, revoked={sid}) is None
+    assert C.read_session(good, keys, now=NOW) is not None
+    assert C.read_session(good, keys, now=NOW, revoked={sid}) is None
 
 
 def test_pin_hash_cross_check() -> None:
-    py_hash = C.hash_pin("1234")
+    py_hash = C.hash_pin("1234", bytes(range(16, 32)))
     node = run("pins", hash=["1234", "000000", "999999999999"], check=[["1234", py_hash], ["1235", py_hash]])
     assert node["matches"] == [True, False]
     n1234, n000000, n12 = node["hashed"]
@@ -215,25 +222,25 @@ def test_tickets_must_be_two_canonical_base64url_parts() -> None:
         good = C.sign_ticket(make_ticket(nick="n" * i, sid="s-_" * (i % 4)), TICKET_SECRET)
         goods.append(good)
         bad += _non_canonical_variants(good, key)
-    node = run("tickets", sign=[], verify=goods + bad)
+    node = run("tickets", sign=[], verify=goods + bad, now=NOW)
     assert all(v is not None for v in node["verified"][: len(goods)])
-    assert all(C.verify_ticket(g, TICKET_SECRET) is not None for g in goods)
+    assert all(C.verify_ticket(g, TICKET_SECRET, now=NOW) is not None for g in goods)
     for raw, want in zip(bad, node["verified"][len(goods) :], strict=True):
         assert want is None, ascii(raw)
-        assert C.verify_ticket(raw, TICKET_SECRET) is None, ascii(raw)
+        assert C.verify_ticket(raw, TICKET_SECRET, now=NOW) is None, ascii(raw)
 
 
 def test_admin_sessions_must_be_canonical() -> None:
     keys = C.admin_keys(TICKET_SECRET, ADMIN_PASSWORD)
-    now = int(time.time() * 1000)
+    now = NOW
     goods = [C.sign_session({"sid": C.b64url(bytes([i]) * 18), "iat": now + i, "exp": now + 3600_000}, keys) for i in range(8)]
     bad = [v for g in goods for v in _non_canonical_variants(g, keys.session_key)]
-    node = run("admin", sessions=[], raws=goods + bad, ips=[], passwords=[], hosts=[])
+    node = run("admin", sessions=[], raws=goods + bad, ips=[], passwords=[], hosts=[], now=NOW)
     assert all(v is not None for v in node["read"][: len(goods)])
-    assert all(C.read_session(g, keys) is not None for g in goods)
+    assert all(C.read_session(g, keys, now=NOW) is not None for g in goods)
     for raw, want in zip(bad, node["read"][len(goods) :], strict=True):
         assert want is None, ascii(raw)
-        assert C.read_session(raw, keys) is None, ascii(raw)
+        assert C.read_session(raw, keys, now=NOW) is None, ascii(raw)
 
 
 def test_pin_rejects_stored_hash_with_wrong_sizes() -> None:

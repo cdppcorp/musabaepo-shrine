@@ -1,4 +1,4 @@
-"""자동 생성: tests/node_ref/gen_ada_tables.py — 손으로 고치지 마세요.
+"""자동 생성: tools/gen_ada_tables.py — 손으로 고치지 마세요.
 
 Ada 3.4.2 (Node 24 내장 URL 파서)의 IDNA 17.0.0 매핑 표 · NFC 정규화 표 · 양방향 표 · ContextJ 표.
 Ada는 Apache-2.0 / MIT 이중 라이선스입니다 (https://github.com/ada-url/ada). 값은 유니코드 데이터입니다.

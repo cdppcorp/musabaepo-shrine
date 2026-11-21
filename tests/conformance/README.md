@@ -1,11 +1,15 @@
 # 적합성 시험 틀 (tests/conformance)
 
-Node 서버(`server/*.ts`)에서 모두 통과한 블랙박스 시험 묶음을 **Node 서버와 Python 서버(`app/`) 어느 쪽에도 그대로** 돌립니다.
-Python 서버는 같은 묶음이 모두 통과하면(SKIP 제외) 다 옮긴 것으로 봅니다.
+예전 Node 서버(`server/*.ts`)에서 모두 통과한 블랙박스 시험 묶음을 Python 서버(`app/`)에 그대로 돌립니다.
+Python 서버로 옮길 때의 완료 기준이었고, 지금은 Python 서버의 회귀 시험입니다 (570 PASS + 3 SKIP).
+
+> **node 대상은 은퇴했습니다.** Node 서버(`server/`)는 커밋 `a2b1bf6` 뒤에 저장소에서 빠졌습니다. `--target node`는 그 사실을 알리고
+> 멈춥니다. Node 쪽 기준값을 다시 보려면 `git switch --detach a2b1bf6`에서 돌립니다. 아래 표의 'node' 칸 · `lib/node-*.mjs`는 그때의 기록입니다.
+
+Node 24 이상(`ws` 패키지: `npm ci`), `uv`, 개발용 PostgreSQL · Redis 컨테이너가 필요합니다 (루트 README '로컬에서 실행').
 
 ```bash
-npm run test:conformance                      # 대상 node (기본)
-npm run test:conformance -- --target py       # 대상 Python (app/.venv, 개발용 PostgreSQL · Redis 필요)
+npm run test:conformance                      # 대상 py (기본) = node tests/conformance/run.mjs
 npm run test:conformance -- --only s1,chan    # 몇 묶음만
 npm run test:conformance -- --browser         # 화면 시험(headless Edge)까지
 npm run test:conformance -- --selftest        # 운전기 자체 시험(driver 묶음)을 먼저: 시험 틀이 그 대상에서 제대로 도는지
@@ -55,7 +59,7 @@ app/tests/conformance_helpers/pgtool.py   py 대상: PostgreSQL · Redis 도우�
 
 | 이름 | 기본 | 뜻 |
 |---|---|---|
-| `SHRINE_TARGET` | `node` | `node` 또는 `py` |
+| `SHRINE_TARGET` | `py` | `py` (`node`는 은퇴: 커밋 `a2b1bf6` 이하에서만) |
 | `SHRINE_TEST_PG` | `postgresql://postgres:dev@127.0.0.1:55432/postgres` | py: 관리자 접속 주소 (개발용 컨테이너 `musabaepo-dev-pg`). 시험마다 무작위 비밀번호의 역할과 새 DB를 만들고 끝나면 지웁니다 (이름 `shrine_conf_<실행>_…`) |
 | `SHRINE_TEST_REDIS` | `redis://127.0.0.1:56379` | py: Redis (개발용 컨테이너 `musabaepo-dev-redis`). DB 번호만 바꿔 씁니다 |
 | `SHRINE_CONF_REDIS_DBS` | `1-12` | py: 시험이 비우고 쓰는 Redis DB 번호 (13은 app pytest가 씀) |

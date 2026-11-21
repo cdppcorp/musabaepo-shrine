@@ -1,44 +1,26 @@
 """업로드 형식 판별 · 메타데이터 지우기 · 알림 글자를 Node(server/uploads.ts · notify.ts)와 바이트까지 맞춰 봅니다.
 
-같은 입력(만든 이미지 + 깨진 변형 + 무작위 변형, 시드 고정)을 tests/p2b_ref.mjs와 shrine.uploads에 넣어
+같은 입력(만든 이미지 + 깨진 변형 + 무작위 변형, 시드 고정)을 예전 tests/p2b_ref.mjs(골든)와 shrine.uploads에 넣어
 sniffImage 결과 · 세 형식별 stripMetadata 결과 · saveUpload 검사(까닭 또는 깨끗한 바이트)가 모두 같아야 합니다.
-node가 없으면 건너뜁니다.
+기준값은 tests/data/golden의 Node 골든(git 기록 a2b1bf6까지의 Node 서버에서 뽑음)입니다.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import random
-import shutil
 import struct
-import subprocess
-import tempfile
-from pathlib import Path
 
-import pytest
+
+from golden import golden
 
 from _p2b_util import jpeg, png, png_chunk, riff_chunk, seg, webp
 from shrine import notify, uploads
 from shrine.logic.jsstr import canonical
 
-HERE = Path(__file__).resolve().parent
-REF = HERE / "p2b_ref.mjs"
-NODE = shutil.which("node")
-
-
 def node_ref(payload: dict):
-    if NODE is None or os.environ.get("SHRINE_NO_NODE"):
-        pytest.skip("node가 없어 Node 기준값과 맞춰 볼 수 없습니다")
-    with tempfile.TemporaryDirectory(prefix="shrine-p2b-ref-") as data:
-        env = {k: v for k, v in os.environ.items() if k.upper() in ("PATH", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE", "HOME")}
-        env.update(DATA_DIR=data, NODE_ENV="development", GITHUB_CHECK="off")
-        r = subprocess.run(
-            [NODE, "--disable-warning=ExperimentalWarning", str(REF)], input=json.dumps(payload).encode(),
-            capture_output=True, env=env, timeout=300,
-        )  # fmt: skip
-    assert r.returncode == 0, r.stderr.decode("utf-8", "replace")
-    return json.loads(r.stdout.decode("utf-8"))
+    """예전 tests/p2b_ref.mjs(server/uploads.ts · notify.ts)의 결과."""
+    return golden("p2b", payload)
 
 
 def corpus() -> list[bytes]:

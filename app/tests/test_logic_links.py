@@ -3,17 +3,19 @@
 - tests/data/url_corpus.json: 까다로운 주소 331개 (GitHub · 서비스 · 백슬래시 · 계정 · 포트 · IPv4 숫자 꼴 · IPv6 · IDN ·
   퍼센트 · 점 경로 · 제어 문자 · 서로게이트), 허용 도메인 짝 26개, 이메일 43개, IP 28개, slug 17개
 - 무작위 조합 주소 6000개, 무작위 IDN 라벨 6000개, xn-- 라벨 3000개
-- 코드 포인트 전체: ``https://a<글자>b.com``의 hostname (Ada 3.4.2 표를 그대로 옮겼는지)
+- 코드 포인트 전체: ``https://a<글자>b.com``의 hostname (Ada 3.4.2 표를 그대로 옮겼는지 — 4096개씩 묶은 sha256으로)
+
+기준값은 tests/data/golden의 Node 골든(git 기록 a2b1bf6까지의 Node 서버에서 뽑음)입니다.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 from pathlib import Path
 
-import pytest
-from node_ref.runner import node_versions, run
+from golden import golden, run
 
 from shrine.logic import links as L
 from shrine.logic.ada_idna import utf32_to_punycode
@@ -121,12 +123,10 @@ def test_random_idn_labels_match_node() -> None:
 
 
 def test_every_code_point_in_a_domain_label_matches_node() -> None:
-    """``https://a<글자>b.com``의 hostname을 코드 포인트 1,114,112개 전부 (약 20초). Ada 판이 다르면 건너뜁니다."""
-    ada = node_versions().get("ada")
-    if ada != "3.4.2":
-        pytest.skip(f"Node 내장 Ada가 {ada}입니다 (표는 3.4.2에서 뽑음: tests/node_ref/gen_ada_tables.py로 다시 만드세요)")
-    node = run("idnaSweep", timeout=600, **{"from": 0, "to": 0x10FFFF, "step": 1})
-    bad = []
+    """``https://a<글자>b.com``의 hostname을 코드 포인트 1,114,112개 전부 (Node 24.14 · Ada 3.4.2 결과를 4096개씩 sha256으로)."""
+    block = 4096
+    want = golden("idna", {"op": "idnaSweep", "from": 0, "to": 0x10FFFF, "step": 1, "block": block})
+    got_all = []
     for cp in range(0x110000):
         got = ""
         if not (0xD800 <= cp <= 0xDFFF):
@@ -134,8 +134,9 @@ def test_every_code_point_in_a_domain_label_matches_node() -> None:
                 got = parse_special_url("https://a" + chr(cp) + "b.com/").hostname
             except InvalidURL:
                 got = ""
-        if got != node[cp]:
-            bad.append((hex(cp), got, node[cp]))
+        got_all.append(got)
+    digests = [hashlib.sha256(json.dumps(got_all[i : i + block], ensure_ascii=True).encode()).hexdigest() for i in range(0, len(got_all), block)]
+    bad = [f"U+{i * block:04X}~U+{(i + 1) * block - 1:04X}" for i, (g, w) in enumerate(zip(digests, want, strict=True)) if g != w]
     assert not bad, bad[:10]
 
 

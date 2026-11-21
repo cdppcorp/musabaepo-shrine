@@ -1,5 +1,5 @@
 # 무사배포 기원소 (Python 서버: FastAPI · uvicorn). 빌드 맥락은 저장소 루트입니다.
-#   docker build -f app/Dockerfile -t musabaepo-shrine-api .        (deploy/docker-compose.py.yml이 이렇게 부름)
+#   docker build -f app/Dockerfile -t musabaepo-shrine-api .        (deploy/docker-compose.yml이 이렇게 부름)
 # 넣는 파일은 app/Dockerfile.dockerignore가 허용 목록으로 정합니다 (.env · data · 시험 · .venv는 들어가지 않음).
 # 이미지 안 배치는 저장소와 같게 둡니다: /srv/shrine/app/shrine (코드), /srv/shrine/public (화면 파일).
 
@@ -21,7 +21,7 @@ COPY app/alembic.ini ./
 RUN .venv/bin/python -m compileall -q shrine alembic
 
 FROM python:3.13-slim
-# 앱 사용자: Node 이미지의 node와 같은 1000번 (데이터 볼륨 권한을 같게)
+# 앱 사용자: 1000번 (호스트 deploy/backups 폴더 주인과 같게)
 RUN groupadd --gid 1000 shrine && useradd --uid 1000 --gid 1000 --no-create-home --shell /usr/sbin/nologin shrine \
     && mkdir -p /data && chown shrine:shrine /data
 WORKDIR /srv/shrine/app

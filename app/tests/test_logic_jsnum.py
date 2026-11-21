@@ -1,4 +1,7 @@
-"""shrine.logic.jsnum · jsstr를 V8(Node)과 맞춰 봅니다: 숫자 글자, Math.round/hypot/max/min, JSON.stringify/parse, UTF-8 풀기."""
+"""shrine.logic.jsnum · jsstr를 V8(Node)과 맞춰 봅니다: 숫자 글자, Math.round/hypot/max/min, JSON.stringify/parse, UTF-8 풀기.
+
+기준값은 tests/data/golden의 Node 골든(git 기록 a2b1bf6까지의 Node 서버에서 뽑음)입니다.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +11,7 @@ import random
 import struct
 
 import pytest
-from node_ref.runner import run
+from golden import run
 
 from shrine.logic.jsnum import (
     UNDEFINED,

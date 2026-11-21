@@ -1,29 +1,18 @@
-"""shrine.whatwg · shrine.jscompat를 Node(`new URL` · net.isIP · JSON.stringify)와 맞춰 봅니다. node가 없으면 건너뜁니다."""
+"""shrine.whatwg · shrine.jscompat를 Node(`new URL` · net.isIP · JSON.stringify)와 맞춰 봅니다.
+
+기준값은 tests/data/golden의 Node 골든(git 기록 a2b1bf6까지의 Node 서버에서 뽑음)입니다.
+"""
 
 from __future__ import annotations
 
-import json
-import shutil
-import subprocess
-
-import pytest
+from golden import golden
 
 from shrine.jscompat import is_ip, js_json
 from shrine.whatwg import InvalidURL, parse_http_url, request_pathname
 
-NODE = shutil.which("node")
-pytestmark = pytest.mark.skipif(NODE is None, reason="node가 없어 Node 결과와 맞춰 볼 수 없습니다")
-
-
 def run_node(script: str, data) -> list:
-    out = subprocess.run(
-        [NODE, "-e", script],
-        input=json.dumps(data).encode("utf-8"),
-        capture_output=True,
-        check=True,
-        timeout=30,
-    )
-    return json.loads(out.stdout.decode("utf-8"))
+    """node -e script에 data를 stdin으로 넣은 결과 (골든)."""
+    return golden("whatwg", {"script": script, "data": data})
 
 
 READ_STDIN = "const inp = JSON.parse(require('fs').readFileSync(0, 'utf8'));"

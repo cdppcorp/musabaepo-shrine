@@ -23,6 +23,8 @@ const FONT = "'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', system-ui,
 const MOVE = {
   arrowup: [0, -1], w: [0, -1], arrowdown: [0, 1], s: [0, 1],
   arrowleft: [-1, 0], a: [-1, 0], arrowright: [1, 0], d: [1, 0],
+  // 휴대폰 화면 패드가 누르는 가상 방향키 (키보드로는 나올 수 없는 이름)
+  'pad:up': [0, -1], 'pad:down': [0, 1], 'pad:left': [-1, 0], 'pad:right': [1, 0],
 }
 /** 직접 쓴 메시지를 서버가 돌려보낸 까닭 */
 const CHAT_FAIL = {
@@ -104,6 +106,27 @@ const st = {
 
 /* ══════════ 시작 ══════════ */
 
+/** 같은 탭에서 게임에 들어와 있었는지 (새로고침해도 입장 화면을 건너뛰려고). 탭을 닫으면 사라집니다 */
+const RESUME_KEY = 'shrine-in-game'
+function loadResume() {
+  try {
+    const v = JSON.parse(sessionStorage.getItem(RESUME_KEY) || 'null')
+    return v && Number.isInteger(v.ch) ? v : null
+  } catch { return null }
+}
+function saveResume(ch) {
+  try { sessionStorage.setItem(RESUME_KEY, JSON.stringify({ ch })) } catch { /* 무시 */ }
+}
+function clearResume() {
+  try { sessionStorage.removeItem(RESUME_KEY) } catch { /* 무시 */ }
+}
+/** 다시 들어가는 중에는 입장 화면이 잠깐 비치지 않게 가려 둡니다 */
+function endResume() {
+  st.resuming = false
+  document.documentElement.classList.remove('resume')
+}
+if (loadResume()) document.documentElement.classList.add('resume')
+
 async function boot() {
   try {
     const res = await fetch(`${BASE}/api/world`, { cache: 'no-store' })
@@ -114,11 +137,13 @@ async function boot() {
     st.recentTopics = data.recentTopics ?? []
     setShrines(data.shrines)
   } catch {
+    endResume()
     $('#enterMsg').textContent = '기원소를 불러오지 못했습니다. 잠시 뒤 새로고침해 주세요.'
     return
   }
   showFootContact()
   if (JSON.stringify(st.world.lookSizes) !== JSON.stringify(LOOK_SIZES)) {
+    endResume()
     $('#enterMsg').textContent = '화면과 서버 버전이 다릅니다. 새로고침해 주세요.'
     return
   }
@@ -135,6 +160,14 @@ async function boot() {
   startPreview()
   loadHumanCheck()
   $('#enterBtn').addEventListener('click', enter)
+  // 같은 탭에서 새로고침했으면 입장 화면을 건너뛰고 있던 채널로 바로 붙습니다.
+  // 입장 표(쿠키, 3시간)가 만료됐거나 없으면 서버가 연결을 받지 않으니, 그때는 조용히 입장 화면으로 돌아갑니다
+  const back = loadResume()
+  if (back) {
+    st.resuming = true
+    if (back.ch >= 1 && back.ch <= (st.world.channels ?? 3)) st.wantCh = back.ch
+    startGame()
+  } else endResume()
 }
 
 /** 입장 화면 아래 문의 주소 (서버에 CONTACT_EMAIL이 있을 때만) */
@@ -372,6 +405,10 @@ async function enter() {
 function backToEntry(text) {
   st.ws?.close()
   st.ws = null
+  // 옷장 · 끊김 · 강퇴 · 표 만료 모두 여기로 옵니다. 이 뒤 새로고침하면 입장 화면부터
+  clearResume()
+  endResume()
+  padStop()
   closeSheet()
   closeChannels()
   document.body.classList.remove('playing')
@@ -388,6 +425,7 @@ function startGame() {
   $('#entry').hidden = true
   $('#game').hidden = false
   document.body.classList.add('playing')
+  document.documentElement.classList.remove('resume')
   fit()
   st.camReady = false
   // 바닥(풀밭 · 길 · 불빛 웅덩이)은 처음 한 번만 구워 둡니다
@@ -414,12 +452,26 @@ function startGame() {
       if ($('#game').hidden) return
       fit()
       measureSheet()
+      placePad()
     })
     $('#leaveBtn').addEventListener('click', () => backToEntry(''))
     $('#glassesBtn').addEventListener('click', () => setGlasses(!st.glasses))
     // 확대 · 축소 단추 (누른 뒤에도 방향키가 바로 먹게 맵에 초점을 돌려 줌)
     $('#zoomIn').addEventListener('click', () => { zoomBy(1); $('#view').focus({ preventScroll: true }) })
     $('#zoomOut').addEventListener('click', () => { zoomBy(-1); $('#view').focus({ preventScroll: true }) })
+    // 미니맵 켜기 · 끄기, 아래 줄(채팅 · 행동) 접기 · 펴기. 마우스로 눌렀으면 맵으로 초점을 돌리고, 키보드로 눌렀으면 단추에 둡니다
+    // (단추가 없는 옛 index.html과 만나도 게임은 돌아가게 ?.로 붙입니다)
+    $('#miniBtn')?.addEventListener('click', e => {
+      setMini(!st.miniOn)
+      if (e.detail) $('#view').focus({ preventScroll: true })
+    })
+    $('#barFold')?.addEventListener('click', e => {
+      setBarFold(!st.barFolded)
+      if (e.detail) $('#view').focus({ preventScroll: true })
+    })
+    setMini(loadFlag(MINI_KEY, true), false)
+    setBarFold(loadFlag(BAR_KEY, false), false)
+    bindPad()
     setGlasses(loadGlasses(), true)
     // 등록소 모달: 닫기 단추 · 바깥(딤) 누르면 닫힘
     $('#regClose').addEventListener('click', closeRegistry)
@@ -539,7 +591,13 @@ function bindTools() {
   $('#pickBtn').addEventListener('click', () => togglePop('pick'))
   $('#emoBtn').addEventListener('click', () => togglePop('emo'))
   const input = $('#chatInput')
-  input.addEventListener('focus', () => st.keys.clear())
+  // 글을 쓰는 동안은 걷지 않습니다 (휴대폰은 자판이 올라오니 화면 패드도 숨김)
+  input.addEventListener('focus', () => {
+    st.keys.clear()
+    padStop()
+    document.body.classList.add('typing')
+  })
+  input.addEventListener('blur', () => document.body.classList.remove('typing'))
   input.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
       e.preventDefault()
@@ -659,7 +717,8 @@ function connect() {
     if (ev.code === 4004) return backToEntry('운영자가 연결을 끊었어요. 이용 규칙을 지켜 주세요.')
     if (ev.code === 4005) return backToEntry(BLOCKED_TEXT)
     // 처음 붙을 때부터 안 되면(입장 표 만료 · 꽉 참) 입장 화면으로. 다시 붙는 중에 실패한 것이면 계속 시도합니다
-    if (!st.hello && !st.retries) return backToEntry('입장 표가 만료됐거나 접속이 많습니다. 다시 입장해 주세요.')
+    // 새로고침으로 다시 들어오려다 안 된 것이면 안내 없이 입장 화면만 보여 줍니다 (표가 끝났을 뿐이라)
+    if (!st.hello && !st.retries) return backToEntry(st.resuming ? '' : '입장 표가 만료됐거나 접속이 많습니다. 다시 입장해 주세요.')
     st.hello = false
     updateHud()
     if (ev.code === 1012) {
@@ -697,6 +756,11 @@ function onServer(m) {
       if (typeof m.chat?.free === 'boolean') setFreeChat(m.chat.free)
       st.myId = m.id
       st.channel = m.channel
+      // 이 탭에서 새로고침하면 이 채널로 다시 들어옵니다. 닉네임 · 모습은 입장 표에 담긴 것(새로고침으로 들어와도 같게)
+      saveResume(m.channel)
+      endResume()
+      if (typeof m.me?.nick === 'string' && m.me.nick) st.nick = st.me.nick = m.me.nick
+      if (validLook(m.me?.look)) st.me.look = [...m.me.look]
       // 채널을 옮겼거나 서버가 다른 채널에 넣었으면 그 채널의 사당만 보이게
       showChannelShrines()
       st.max = m.max
@@ -938,6 +1002,8 @@ function bindInput() {
       e.preventDefault()
     } else if (k === 'enter' && !onControl) {
       e.preventDefault()
+      // 아래 줄을 접어 두었으면 펴고 나서
+      if (st.barFolded) setBarFold(false)
       if (st.chat.free) $('#chatInput').focus()
       else openPop('pick')
     } else if (k === ' ' && !onControl) {
@@ -971,6 +1037,8 @@ function bindInput() {
     zoomBy(e.deltaY < 0 ? 1 : -1)
   }, { passive: false })
   view.addEventListener('pointerdown', e => {
+    // 화면 패드로 걷는 중에 다른 손가락이 맵에 닿아도 누른 곳으로 걷기는 하지 않습니다
+    if (pad.id !== null) return
     view.focus()
     closePops()
     closeChannels()
@@ -1412,8 +1480,14 @@ function openShrine(s) {
   body.append(badges, meta)
   if (s.email) {
     const mail = el('p', 'meta')
-    const a = el('a', null, s.email)
+    const a = el('a')
+    // 긴 주소는 @ 뒤 · 점 앞에서 먼저 줄을 바꿉니다 (<wbr>은 복사해도 글자에 끼지 않음). 그래도 길면 CSS가 아무 곳에서나
+    for (const part of s.email.split(/(?=\.)|(?<=@)/)) {
+      if (a.childNodes.length) a.append(document.createElement('wbr'))
+      a.append(part)
+    }
     a.href = `mailto:${s.email}`
+    a.title = s.email
     mail.append('연락 ', a)
     body.append(mail)
   }
@@ -1627,6 +1701,8 @@ function move(p, dx, dy, dt, followingPath) {
 
 function update(dt, now) {
   const me = st.me
+  // 화면 패드를 누른 채 패드가 가려지면(창 · 입력칸 · 등록소가 열림) 걷기를 멈춥니다
+  if (pad.id !== null && padHidden()) padStop()
   let dx = 0
   let dy = 0
   for (const k of st.keys) {
@@ -2009,20 +2085,23 @@ const HUD_NOTES = [
   { sel: '#actBtn', side: 'above', title: '할 일 버튼', text: '사당 · 신당 · 의자 가까이 가면 할 수 있는 일이 떠요. Space 키로도 돼요', wide: true },
   { sel: '#actBtn', side: 'above', title: '할 일 버튼', text: '가까이 가면 할 수 있는 일이 떠요', narrow: true },
   { sel: '#hudChannel', side: 'below', title: '채널', text: '누르면 채널을 옮겨요. 함께 있는 사람 신고 · 말풍선 숨기기도 여기서' },
+  { sel: '#pad', side: 'above', title: '화면 패드', text: '누른 채 밀면 그쪽으로 걸어요. 손을 떼면 멈춰요' },
   { sel: '#minimap', side: 'left', title: '미니맵', text: '누른 곳으로 걸어가요' },
-  { sel: '#zoomBar', side: 'left', title: '확대 · 축소', text: '맵을 크게 · 작게 봐요. 마우스 휠 · +/- 키로도 돼요' },
+  { sel: '#zoomBar', side: 'left', title: '확대 · 축소 · 미니맵', text: '맵을 크게 · 작게 봐요 (휠 · +/- 키). 미니맵 단추로 미니맵을 켜고 꺼요', wide: true },
+  { sel: '#zoomBar', side: 'left', title: '확대 · 축소 · 미니맵', text: '맵 크기를 바꾸고, 미니맵을 켜고 꺼요', narrow: true },
   { sel: '#pickBtn', side: 'above', title: '말 고르기', text: '정해진 인사 · 응원 말을 골라 보내요', wide: true },
   { sel: '#chatInput', side: 'above', title: '직접 말하기', text: '쓰고 Enter. 저장되지 않고 잠깐 떠 있다 사라져요', wide: true },
   { sel: '.sec-chat', side: 'above', title: '채팅', text: '고르기는 정해진 말, 칸에 쓰면 직접 말해요', narrow: true },
   { sel: '.sec-acts', side: 'above', title: '행동', text: '절하기 · 손 흔들기 · 뽀뽀 같은 동작을 해요' },
+  { sel: '#barFold', side: 'above', title: '접기 · 펴기', text: '채팅 · 행동 줄을 접어 맵을 넓게 봐요' },
   { sel: '#hudToday', side: 'below', title: '이번 주 초', text: '초가 모일수록 기원소가 밝아져요. 월요일마다 새로 시작해요' },
   { sel: '.hud-right .list summary', side: 'below', title: '사당 목록', text: '이름을 누르면 그 사당으로 걸어가요', wide: true },
   { sel: '#glassesBtn', side: 'below', title: '네비게이터', text: '다시 누르거나 G 키로 설명을 숨겨요', wide: true },
-  { sel: '#leaveBtn', side: 'below', title: '꾸미기', text: '캐릭터를 다시 꾸며요', wide: true },
+  { sel: '#leaveBtn', side: 'below', title: '옷장', text: '옷 · 머리 · 소품을 다시 골라요', wide: true },
 ]
 const NARROW = 720
 /** 설명 카드가 덮으면 안 되는 화면 단추 · 창 */
-const HUD_BLOCKS = ['#hudChannel', '#chanPop', '#hudToday', '.hud-right .list', '#glassesBtn', '#leaveBtn', '#minimap', '#zoomBar', '.bar', '#sheet', '#pickPop', '#emoPop']
+const HUD_BLOCKS = ['#hudChannel', '#chanPop', '#hudToday', '.hud-right .list', '#glassesBtn', '#leaveBtn', '#minimap', '#zoomBar', '.bar', '#sheet', '#pickPop', '#emoPop', '#pad']
 
 /** 화면 단추 · 창 자리 (캔버스 CSS 좌표). 자주 바뀌지 않아 0.3초마다 잽니다 */
 function measureHud(t) {
@@ -2067,7 +2146,7 @@ function glassesWorldNotes(cx, cy) {
     return best
   }
   const touch = window.matchMedia?.('(pointer: coarse)').matches
-  add(me.x, me.y - 14, 12, '나', touch ? '가고 싶은 곳을 누르면 걸어가요' : '방향키 · WASD로 걸어요. 맵을 눌러도 그곳으로 가요. 휠 · +/- 키로 확대 · 축소', '#ffffff', true)
+  add(me.x, me.y - 14, 12, '나', touch ? '화면 패드를 밀거나 가고 싶은 곳을 누르면 걸어가요' : '방향키 · WASD로 걸어요. 맵을 눌러도 그곳으로 가요. 휠 · +/- 키로 확대 · 축소', '#ffffff', true)
 
   const live = closest(W.plots.filter(p => st.byPlot.has(p.id)).map(p => [p.x + 24, p.y + 16, st.byPlot.get(p.id)]))
   if (live) add(live[0], live[1], 22, `${live[2].name} 사당`, '누군가 만든 프로젝트예요. 앞에서 Space로 둘러보고 초를 켜 주세요 (같은 사당은 30분에 한 번)', '#f7c27a')
@@ -3158,7 +3237,7 @@ function drawMinimap() {
 /** 미니맵을 누르면 그곳으로 걸어갑니다 (막힌 곳이면 가장 가까운 빈 곳으로) */
 function onMinimap(e) {
   e.preventDefault()
-  if (!st.mini || !st.me) return
+  if (!st.mini || !st.me || pad.id !== null) return
   closePops()
   // offsetX · offsetY는 테두리 안쪽 기준입니다
   const { s, ox, oy, dpr } = st.mini
@@ -3177,6 +3256,155 @@ function onMinimap(e) {
   st.path = findPath(st.me, target)
   st.arrive = false
   $('#view').focus({ preventScroll: true })
+}
+
+/* ══════════ 화면 단추 접기 · 켜기 ══════════ */
+
+const MINI_KEY = 'shrine-minimap'
+const BAR_KEY = 'shrine-bar-folded'
+
+function loadFlag(key, fallback) {
+  try {
+    const v = localStorage.getItem(key)
+    return v === '1' ? true : v === '0' ? false : fallback
+  } catch { return fallback }
+}
+
+function saveFlag(key, on) {
+  try { localStorage.setItem(key, on ? '1' : '0') } catch { /* 무시 */ }
+}
+
+/** 미니맵 켜기 · 끄기 (끄면 확대 · 축소 단추가 그 자리로 내려옵니다) */
+function setMini(on, save = true) {
+  const b = $('#miniBtn')
+  if (!b) return
+  st.miniOn = on
+  st.lens = null
+  document.body.classList.toggle('mini-off', !on)
+  b.setAttribute('aria-pressed', String(on))
+  b.title = on ? '미니맵 끄기' : '미니맵 켜기'
+  if (save) saveFlag(MINI_KEY, on)
+}
+
+/** 아래 줄 접기 · 펴기: 접으면 할 일 단추(사당 보기 · 초 켜기)만 남고 채팅 · 행동은 숨습니다 */
+function setBarFold(folded, save = true) {
+  const b = $('#barFold')
+  if (!b) return
+  st.barFolded = folded
+  st.lens = null
+  document.body.classList.toggle('bar-folded', folded)
+  const label = folded ? '채팅 · 행동 펴기' : '채팅 · 행동 접기'
+  b.setAttribute('aria-expanded', String(!folded))
+  b.setAttribute('aria-label', label)
+  b.title = label
+  if (folded) {
+    closePops()
+    if ($('#barChat')?.contains(document.activeElement) || $('#barActs')?.contains(document.activeElement)) b.focus({ preventScroll: true })
+  }
+  if (save) saveFlag(BAR_KEY, folded)
+  placePad()
+}
+
+/* ══════════ 화면 패드 (휴대폰 · 태블릿) ══════════ */
+
+/** 패드를 민 방향 8가지 (오른쪽부터 시계 방향, 화면 y는 아래가 +) → 누르는 가상 방향키.
+ * 키보드 방향키와 똑같이 st.keys에 넣으므로 걸음 속도 · 막힌 곳 · 앉았다 일어나기 · 서버로 보내는 이동(mv)이 모두 같습니다 */
+const PAD_DIRS = [
+  ['r', ['pad:right']], ['dr', ['pad:down', 'pad:right']], ['d', ['pad:down']], ['dl', ['pad:down', 'pad:left']],
+  ['l', ['pad:left']], ['ul', ['pad:up', 'pad:left']], ['u', ['pad:up']], ['ur', ['pad:up', 'pad:right']],
+]
+const PAD_KEYS = ['pad:up', 'pad:down', 'pad:left', 'pad:right']
+/** 손잡이가 움직이는 거리(px) · 이만큼 안쪽은 멈춤 */
+const PAD_REACH = 32
+const PAD_DEAD = 10
+/** id: 패드를 누른 손가락(pointerId), dir: PAD_DIRS 번호(-1은 멈춤) */
+const pad = { id: null, cx: 0, cy: 0, dir: -1 }
+
+function setPadDir(dir) {
+  if (dir === pad.dir) return
+  pad.dir = dir
+  for (const k of PAD_KEYS) st.keys.delete(k)
+  if (dir >= 0) {
+    for (const k of PAD_DIRS[dir][1]) st.keys.add(k)
+    // 키보드처럼: 누른 곳으로 걷던 길은 버립니다
+    st.path = []
+    st.arrive = false
+  }
+  const el = $('#pad')
+  if (el) el.dataset.dir = dir >= 0 ? PAD_DIRS[dir][0] : ''
+}
+
+function padStop() {
+  const el = $('#pad')
+  if (!el) return
+  if (pad.id !== null) {
+    try { el.releasePointerCapture(pad.id) } catch { /* 이미 놓음 */ }
+  }
+  pad.id = null
+  setPadDir(-1)
+  el.classList.remove('on')
+  el.style.setProperty('--kx', '0px')
+  el.style.setProperty('--ky', '0px')
+}
+
+/** 패드가 화면에서 가려졌는지 (CSS가 숨김: 마우스 기기 · 창 · 입력칸) */
+function padHidden() {
+  return $('#game').hidden || $('#regModal').open || !$('#pad') || $('#pad').offsetParent === null
+}
+
+function padTrack(e) {
+  let dx = e.clientX - pad.cx
+  let dy = e.clientY - pad.cy
+  const len = Math.hypot(dx, dy)
+  if (len > PAD_REACH) {
+    dx = (dx / len) * PAD_REACH
+    dy = (dy / len) * PAD_REACH
+  }
+  // 손잡이는 4px 도트 칸에 맞춰 움직입니다
+  const el = $('#pad')
+  el.style.setProperty('--kx', `${Math.round(dx / 4) * 4}px`)
+  el.style.setProperty('--ky', `${Math.round(dy / 4) * 4}px`)
+  setPadDir(len < PAD_DEAD ? -1 : (Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) + 8) % 8)
+}
+
+/** 화면 패드는 아래 줄 바로 위에 둡니다 (아래 줄을 접고 펴면 같이 오르내림) */
+function placePad() {
+  const el = $('#pad')
+  const bar = document.querySelector('.bar')
+  if (!el || !bar || $('#game').hidden) return
+  const g = $('#game').getBoundingClientRect()
+  const b = bar.getBoundingClientRect()
+  if (b.height) el.style.bottom = `${Math.round(g.bottom - b.top + 10)}px`
+}
+
+function bindPad() {
+  const el = $('#pad')
+  if (!el) return
+  el.addEventListener('pointerdown', e => {
+    if (pad.id !== null || padHidden()) return
+    e.preventDefault()
+    pad.id = e.pointerId
+    const r = el.getBoundingClientRect()
+    pad.cx = r.left + r.width / 2
+    pad.cy = r.top + r.height / 2
+    try { el.setPointerCapture(e.pointerId) } catch { /* 없어도 됨 */ }
+    el.classList.add('on')
+    closePops()
+    closeChannels()
+    padTrack(e)
+  })
+  el.addEventListener('pointermove', e => { if (e.pointerId === pad.id) padTrack(e) })
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+    el.addEventListener(type, e => { if (e.pointerId === pad.id) padStop() })
+  }
+  // 터치 이벤트로도 한 번 더 (멀티 터치 중 포인터 이벤트를 놓치는 브라우저 대비)
+  el.addEventListener('touchend', e => { if (!e.targetTouches.length) padStop() })
+  el.addEventListener('touchcancel', padStop)
+  el.addEventListener('contextmenu', e => e.preventDefault())
+  window.addEventListener('blur', padStop)
+  document.addEventListener('visibilitychange', () => { if (document.hidden) padStop() })
+  if (window.ResizeObserver) new ResizeObserver(placePad).observe(document.querySelector('.bar'))
+  placePad()
 }
 
 function loop(t) {

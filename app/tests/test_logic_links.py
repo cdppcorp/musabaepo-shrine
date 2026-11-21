@@ -18,6 +18,7 @@ from node_ref.runner import node_versions, run
 from shrine.logic import links as L
 from shrine.logic.ada_idna import utf32_to_punycode
 from shrine.logic.jsnum import json_stringify
+from shrine.logic.jsstr import canonical, js_trim
 from shrine.logic.util import kst_date
 from shrine.logic.weburl import InvalidURL, is_ip, parse_special_url
 
@@ -149,7 +150,9 @@ def test_registry_read_links_domain_and_email_match_node() -> None:
         r = L.read_links(g, u)
         assert r == want["r"], (g, u, r, want["r"])
         assert (L.domain_of(r["links"]) if r["ok"] else None) == want["domain"], (g, u)
-        assert L.clean_email(g) == want["email"], g
+        # 보안 점검: 제어 문자 · 짝 없는 서로게이트가 든 이메일은 일부러 Node와 다르게 거절합니다 (logic/links.py clean_email)
+        bad = isinstance(g, str) and L._EMAIL_BAD.search(canonical(js_trim(g))) is not None
+        assert L.clean_email(g) == (None if bad else want["email"]), g
 
 
 def base_shrine(**over: object) -> dict:

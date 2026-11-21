@@ -27,7 +27,8 @@
 	}
 
 	# Cloudflare 프록시(주황 구름)를 켤 때만 주석을 풉니다. 안 풀면 모든 방문자가 Cloudflare IP로 보여 IP 제한에 같이 걸립니다.
-	# 대역은 https://www.cloudflare.com/ips/ 목록을 그대로 적고, 아래 reverse_proxy 안의 header_up 줄도 함께 풉니다.
+	# 대역은 https://www.cloudflare.com/ips/ 목록을 그대로 적습니다. 아래 reverse_proxy의 header_up X-Forwarded-For는
+	# 늘 켜 두므로 따로 풀 것이 없습니다 (켜면 {client_ip}가 CF-Connecting-IP에서 온 값이 됨).
 	# servers {
 	# 	trusted_proxies static 173.245.48.0/20 103.21.244.0/22 (… 목록 전체)
 	# 	client_ip_headers CF-Connecting-IP
@@ -77,8 +78,9 @@
 		# 배포로 앱이 잠깐 내려가 있으면 5초까지 다시 붙어 봅니다 (그동안 요청은 기다립니다)
 		lb_try_duration 5s
 		lb_try_interval 250ms
-		# Cloudflare 프록시를 쓸 때만 (위 trusted_proxies와 함께): 앱이 첫 값으로 실제 방문자 IP를 받게 합니다
-		# header_up X-Forwarded-For {client_ip}
+		# 앱이 받는 X-Forwarded-For를 늘 값 하나(Caddy가 판단한 방문자 IP)로 덮어씁니다. 앱(TRUST_PROXY=true)은 첫 값을
+		# 믿으므로, trusted_proxies를 켰을 때 방문자가 보낸 X-Forwarded-For가 앞에 남아 IP를 꾸미지 못하게 합니다
+		header_up X-Forwarded-For {client_ip}
 		transport http {
 			# 앱(Node)의 keep-alive(기본 5초)보다 짧게: 앱이 막 닫은 연결을 다시 써서 생기는 502를 막습니다
 			keepalive 4s

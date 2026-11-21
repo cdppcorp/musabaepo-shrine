@@ -14,6 +14,7 @@ install(app, ctx)를 routes.py의 13~20 자리에서 부릅니다: 라우트를 
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from starlette.convertors import Convertor, register_url_convertor
@@ -31,6 +32,8 @@ from .responses import NodeResponse, json_response, not_found
 __all__ = ["install", "is_blocked", "read_json", "read_limited", "routes", "same_origin", "ticket_of"]
 
 JSON_LIMIT = 4096
+
+log = logging.getLogger("shrine.registry")
 
 
 class _ReceiptCode(Convertor):
@@ -60,7 +63,9 @@ async def read_json(request: Request, limit: int = JSON_LIMIT) -> dict[str, Any]
 
 
 async def read_limited(request: Request, limit: int) -> bytes | None:
-    """본문을 끝까지 읽되 limit을 넘거나 끊기면 None (uploads.ts readBody)."""
+    """본문을 끝까지 읽되 limit을 넘거나 끊기면 None (uploads.ts readBody).
+    읽기 시간 한도(전체 60초 · 조각 사이 15초 · 최소 속도)는 web/front.py BodyDeadline이 모든 요청에 겁니다:
+    넘으면 끊긴 것(ClientDisconnect)으로 와서 None. registry JSON(api.read_json)은 front가 408로 답합니다."""
     chunks: list[bytes] = []
     size = 0
     try:
@@ -142,3 +147,14 @@ def install(app, ctx: AppContext) -> None:
     async def _p2b_startup(c: AppContext) -> None:
         notify_mod.configure(c.config.notify_webhook_url)
         install_tasks(c)
+        # 보안 점검: 안 붙인 업로드는 1시간 뒤 지우므로 6시간 주기 정리 말고 15분마다도 돌립니다
+        c.tasks.every("안 쓰인 업로드 정리", 15 * 60, lambda: _cleanup_orphans(c), immediate=False)
+
+
+async def _cleanup_orphans(ctx: AppContext) -> None:
+    from .. import uploads as up
+
+    try:
+        await up.cleanup_uploads(ctx)
+    except Exception:  # noqa: BLE001 — 다음 주기에 다시
+        log.exception("[shrine] 안 쓰인 업로드 정리 실패")

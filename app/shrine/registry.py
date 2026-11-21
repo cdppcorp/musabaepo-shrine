@@ -18,7 +18,15 @@ Node 메모리 → Redis (모두 만료가 붙음, IP는 그날 해시, 이메�
   shrine:reg:pinfail:<접수번호>          HASH {n, until} 접수별 5번 틀리면 15분 잠금 (PX 1h · 잠금 15분)
   shrine:reg:mailfail:<HMAC(이메일)>      HASH {n, until} 이메일+PIN 찾기 5번 → 15분 (PX 1h · 잠금 15분)
   shrine:reg:pinip:<KST날짜>:<IP해시>    IP당 하루 PIN 틀림 30번 (PX 26h)
-하루 20번 → 24시간 잠금은 DB(pin_locks)에 둡니다 (다시 띄워도 남음).
+  shrine:reg:pinpip:<KST날짜>:<접수번호>:<IP해시>  (접수, IP)마다 하루 PIN 틀림 20번 → 그날 그 IP에서만 잠금 (PX 26h)
+  shrine:reg:mailday:<KST날짜>:<HMAC(이메일)>     이메일+PIN 찾기: 이메일마다 하루 틀림 20번 (PX 26h)
+접수 하나에 모든 IP를 합쳐 하루 200번 → 24시간 잠금은 DB(pin_locks)에 둡니다 (다시 띄워도 남음).
+
+보안 점검으로 Node와 일부러 다르게 둔 곳:
+  · Node는 접수마다 하루 20번이면 누가 틀렸든 24시간 잠갔습니다 (남의 접수를 아무나 잠글 수 있음). 여기서는 20번을
+    (접수, IP /64 해시)마다 세서 그 IP만 그날 잠그고, 모든 IP 합 200번을 마지막 방어선으로 둡니다.
+  · 이메일+PIN 찾기가 틀리면 그 이메일의 접수마다 위 하루 횟수를 함께 올리고, 이메일마다 하루 20번까지만 받습니다
+    (찾기로 접수별 하루 잠금을 비켜 가지 못하게).
 """
 
 from __future__ import annotations
@@ -31,6 +39,7 @@ import logging
 import math
 import re
 import secrets
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
@@ -75,7 +84,12 @@ SUBMITS_PER_DAY = 3
 PIN_TRIES = 5
 PIN_LOCK_MS = 15 * 60_000
 PIN_FAILS_PER_DAY = 30
-PIN_FAILS_PER_PROJECT_DAY = 20
+#: (접수, IP /64 해시)마다 하루 틀림 한도: 닿으면 그날 그 IP에서만 그 접수가 잠깁니다 (Redis)
+PIN_FAILS_PER_PROJECT_IP_DAY = 20
+#: 접수마다 하루 틀림 한도 (모든 IP 합): 닿으면 24시간 잠금 (DB pin_locks, 마지막 방어선)
+PIN_FAILS_PER_PROJECT_DAY = 200
+#: 이메일+PIN 찾기: 이메일마다 하루 틀림 한도
+FIND_FAILS_PER_EMAIL_DAY = 20
 PIN_DAY_LOCK_MS = 24 * 3600_000
 #: 틀린 횟수 기록의 수명 (Node는 1시간마다 잠금이 없는 기록을 지웠음)
 FAIL_TTL_MS = 3600_000
@@ -291,10 +305,23 @@ def _pin_ip_key(day: str, ip_key: str) -> str:
     return key("reg", "pinip", day, ip_key or "-")
 
 
-def _mail_key(ctx, email: str) -> str:
+def _pin_project_ip_key(day: str, pid: int, ip_key: str) -> str:
+    return key("reg", "pinpip", day, str(pid), ip_key or "-")
+
+
+def _mail_mac(ctx, email: str) -> str:
+    """이메일 대신 쓰는 값: 서버 키로 만든 HMAC (Redis에 이메일 원문을 두지 않음)."""
     secret = ctx.config.ticket_secret
     mac = hmac.new(utf8_encode(secret), b"shrine-email\0" + utf8_encode(email), hashlib.sha256).digest()
-    return key("reg", "mailfail", _b64url(mac)[:22])
+    return _b64url(mac)[:22]
+
+
+def _mail_key(ctx, email: str) -> str:
+    return key("reg", "mailfail", _mail_mac(ctx, email))
+
+
+def _mail_day_key(day: str, mac: str) -> str:
+    return key("reg", "mailday", day, mac)
 
 
 async def _get_fail(r, k: str) -> tuple[int, int] | None:
@@ -313,16 +340,38 @@ async def _set_fail(r, k: str, n: int, until: int, now: int) -> None:
         await p.execute()
 
 
-async def _incr_day(r, k: str) -> None:
+async def _incr_day(r, k: str) -> int:
     async with r.pipeline(transaction=True) as p:
         p.incr(k)
         p.pexpire(k, DAY_KEY_TTL_MS)
-        await p.execute()
+        res = await p.execute()
+    return int(res[0])
 
 
 async def _count(r, k: str) -> int:
     v = await r.get(k)
     return int(v) if v is not None else 0
+
+
+# ── PIN 기록이 Redis에 남지 않을 때: 잠긴 것으로 (fail closed) ──────────
+#
+# 보안 점검: Redis가 쓰기를 거절하거나(maxmemory noeviction OOM) 끊기면 틀린 횟수가 쌓이지 않아 PIN을 끝없이 맞춰 볼 수
+# 있었습니다 (맞는 PIN은 그대로 통과). PIN 확인 · 이메일+PIN 찾기에서 PIN 기록을 읽거나 쓰다 Redis 오류가 나면
+# '잠김'으로 답하고, 이 프로세스는 PIN_STORE_RETRY_S 동안 PIN 확인을 받지 않습니다 (그 뒤 한 번씩 다시 시도).
+# 하루 횟수(DB pin_locks)는 Redis보다 먼저 올립니다. 일반 요청 제한은 그대로 fail-open입니다.
+
+PIN_STORE_RETRY_S = 30.0
+_pin_store_down_until = 0.0
+
+
+def _pin_store_down() -> bool:
+    return time.monotonic() < _pin_store_down_until
+
+
+def _pin_store_failed(where: str, err: BaseException) -> None:
+    global _pin_store_down_until
+    _pin_store_down_until = time.monotonic() + PIN_STORE_RETRY_S
+    log.warning("[shrine] PIN 기록(Redis)을 %s 못해 %d초 동안 PIN 확인을 잠급니다 (%s)", where, PIN_STORE_RETRY_S, type(err).__name__)
 
 
 # ── PIN ─────────────────────────────────────────────────────────────
@@ -345,8 +394,9 @@ async def _day_locked(s: AsyncSession, pid: int, now: int) -> bool:
     return row is not None and row[0] > now
 
 
-async def _add_day_fail(ctx, pid: int, now: int) -> bool:
-    """그날 틀린 횟수를 하나 올리고(한 문장 · 행 잠금), 20번이 되면 24시간 잠급니다. 잠갔으면 True."""
+async def _add_day_fail(ctx, pid: int, now: int, ip_key: str | None = None) -> bool:
+    """그날 틀린 횟수를 하나 올립니다. ip_key가 있으면 (접수, IP)마다 세어 20번이면 그날 그 IP에서만 잠기고,
+    접수 전체(한 문장 · 행 잠금)로 200번이 되면 24시간 잠급니다. 어느 쪽이든 잠겼으면 True."""
     day = kst_date(now)
     async with ctx.db.begin() as s:
         fails = (
@@ -367,8 +417,16 @@ async def _add_day_fail(ctx, pid: int, now: int) -> bool:
                 {"id": pid, "until": now + PIN_DAY_LOCK_MS},
             )
     if lock:
-        notify_mod.notify("관리 비밀번호 잠금 (하루 20번 틀림, 24시간)", {"접수": pid})
-    return lock
+        notify_mod.notify(f"관리 비밀번호 잠금 (하루 {PIN_FAILS_PER_PROJECT_DAY}번 틀림, 24시간)", {"접수": pid})
+    ip_lock = False
+    if ip_key is not None:
+        # DB를 먼저 올린 뒤 (접수, IP) 횟수. Redis가 받지 않으면 잠긴 것으로
+        try:
+            ip_lock = await _incr_day(ctx.redis, _pin_project_ip_key(day, pid, ip_key)) >= PIN_FAILS_PER_PROJECT_IP_DAY
+        except Exception as e:  # noqa: BLE001
+            _pin_store_failed("쓰지", e)
+            ip_lock = True
+    return lock or ip_lock
 
 
 def _pin_text(raw: Any) -> str:
@@ -392,25 +450,41 @@ async def authorize(ctx, id_raw: Any, pin_raw: Any, ip_key: str) -> dict:
             now = now_ms()
             day = kst_date(now)
             r = ctx.redis
-            if await _count(r, _pin_ip_key(day, ip_key)) >= PIN_FAILS_PER_DAY:
+            if _pin_store_down():
                 return fail(429, "locked")
-            pf = await _get_fail(r, _pin_fail_key(pid))
-            if pf is not None and pf[1] > now:
+            try:
+                if await _count(r, _pin_ip_key(day, ip_key)) >= PIN_FAILS_PER_DAY:
+                    return fail(429, "locked")
+                pf = await _get_fail(r, _pin_fail_key(pid))
+                if pf is not None and pf[1] > now:
+                    return fail(429, "locked")
+                if await _count(r, _pin_project_ip_key(day, pid, ip_key)) >= PIN_FAILS_PER_PROJECT_IP_DAY:
+                    return fail(429, "locked")
+            except Exception as e:  # noqa: BLE001 — PIN 기록을 못 읽으면 잠긴 것으로
+                _pin_store_failed("읽지", e)
                 return fail(429, "locked")
             if await _day_locked(s, pid, now):
                 return fail(429, "locked")
         pin = _pin_text(pin_raw)
         ok = PIN_RE.fullmatch(pin) is not None and await asyncio.to_thread(pin_matches, pin, row["pin_hash"])
         if not ok:
+            # 하루 횟수(DB)를 먼저: Redis가 받지 않아도 접수 전체 200번 잠금은 쌓입니다
+            day_lock = await _add_day_fail(ctx, pid, now, ip_key)
             n = (pf[0] if pf is not None and pf[1] <= now else 0) + 1
-            if n >= PIN_TRIES:
-                await _set_fail(r, _pin_fail_key(pid), 0, now + PIN_LOCK_MS, now)
-            else:
-                await _set_fail(r, _pin_fail_key(pid), n, 0, now)
-            await _incr_day(r, _pin_ip_key(day, ip_key))
-            day_lock = await _add_day_fail(ctx, pid, now)
+            try:
+                if n >= PIN_TRIES:
+                    await _set_fail(r, _pin_fail_key(pid), 0, now + PIN_LOCK_MS, now)
+                else:
+                    await _set_fail(r, _pin_fail_key(pid), n, 0, now)
+                await _incr_day(r, _pin_ip_key(day, ip_key))
+            except Exception as e:  # noqa: BLE001
+                _pin_store_failed("쓰지", e)
+                return fail(403, "locked")
             return fail(403, "locked" if n >= PIN_TRIES or day_lock else "pin")
-        await r.delete(_pin_fail_key(pid))
+        try:
+            await r.delete(_pin_fail_key(pid))
+        except Exception:  # noqa: BLE001 — 맞는 PIN: 틀린 기록을 못 지워도 15분 뒤 저절로 사라짐
+            log.warning("[shrine] PIN 틀린 기록을 지우지 못했습니다 (Redis)")
         return row
 
 
@@ -422,15 +496,24 @@ async def find_mine(ctx, body: dict, ip_key: str) -> dict:
     pin = body.get("pin") if isinstance(body.get("pin"), str) else ""
     if not PIN_RE.fullmatch(pin):
         return fail(400, "pin")
-    ek = _mail_key(ctx, email)
+    mac = _mail_mac(ctx, email)
+    ek = key("reg", "mailfail", mac)
     async with _locks.hold(f"ip:{ip_key}"), _locks.hold(f"m:{ek}"):
         now = now_ms()
         day = kst_date(now)
         r = ctx.redis
-        if await _count(r, _pin_ip_key(day, ip_key)) >= PIN_FAILS_PER_DAY:
+        if _pin_store_down():
             return fail(429, "locked")
-        ef = await _get_fail(r, ek)
-        if ef is not None and ef[1] > now:
+        try:
+            if await _count(r, _pin_ip_key(day, ip_key)) >= PIN_FAILS_PER_DAY:
+                return fail(429, "locked")
+            if await _count(r, _mail_day_key(day, mac)) >= FIND_FAILS_PER_EMAIL_DAY:
+                return fail(429, "locked")
+            ef = await _get_fail(r, ek)
+            if ef is not None and ef[1] > now:
+                return fail(429, "locked")
+        except Exception as e:  # noqa: BLE001 — PIN 기록을 못 읽으면 잠긴 것으로
+            _pin_store_failed("읽지", e)
             return fail(429, "locked")
         async with ctx.db.session() as s:
             rows = [
@@ -453,14 +536,25 @@ async def find_mine(ctx, body: dict, ip_key: str) -> dict:
 
         mine = await asyncio.to_thread(check)
         if not mine:
+            # 보안 점검: 찾기로 틀린 것도 그 이메일의 접수마다 하루 횟수에 넣습니다 (관리 화면 PIN 확인과 같은 길, DB 먼저)
+            for x in rows:
+                await _add_day_fail(ctx, x["id"], now, ip_key)
             n = (ef[0] if ef is not None and ef[1] <= now else 0) + 1
-            if n >= PIN_TRIES:
-                await _set_fail(r, ek, 0, now + PIN_LOCK_MS, now)
-            else:
-                await _set_fail(r, ek, n, 0, now)
-            await _incr_day(r, _pin_ip_key(day, ip_key))
-            return fail(403, "locked" if n >= PIN_TRIES else "pin")
-        await r.delete(ek)
+            try:
+                if n >= PIN_TRIES:
+                    await _set_fail(r, ek, 0, now + PIN_LOCK_MS, now)
+                else:
+                    await _set_fail(r, ek, n, 0, now)
+                await _incr_day(r, _pin_ip_key(day, ip_key))
+                mail_day = await _incr_day(r, _mail_day_key(day, mac))
+            except Exception as e:  # noqa: BLE001
+                _pin_store_failed("쓰지", e)
+                return fail(403, "locked")
+            return fail(403, "locked" if n >= PIN_TRIES or mail_day >= FIND_FAILS_PER_EMAIL_DAY else "pin")
+        try:
+            await r.delete(ek)
+        except Exception:  # noqa: BLE001 — 맞는 PIN: 틀린 기록을 못 지워도 저절로 사라짐
+            log.warning("[shrine] 찾기 틀린 기록을 지우지 못했습니다 (Redis)")
     return {
         "ok": True,
         "projects": [

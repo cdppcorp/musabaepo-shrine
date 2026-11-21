@@ -1,8 +1,10 @@
 """등록소 이미지 올리기 · 보여 주기 (http.ts uploadApi 244-268 · 423, uploads.ts serveUpload 384-422).
 
-POST /api/upload — 입장한 사람만, 같은 출처에서만, 10MB까지 (본문은 이미지 그대로, Content-Type은 보지 않음):
-  출처 403 origin → 입장 표 401 ticket → 차단 403 blocked → Content-Length > 10MB 413 size
-  → 시도 · 할당량 · 용량 · 동시 업로드 수(본문을 읽기 전) → 본문 읽기(넘치거나 끊기면 413 size) → 검사 · 저장 → 201 {ok, id}
+POST /api/upload — 입장한 사람만, 같은 출처에서만, 5MB까지 (본문은 이미지 그대로, Content-Type은 보지 않음):
+  출처 403 origin → 입장 표 401 ticket → 차단 403 blocked → Content-Length > 5MB 413 size
+  → 시도 · 할당량 · 용량 · 동시 업로드 수(본문을 읽기 전) → 본문 읽기(넘치거나 끊기면 413 size,
+  너무 느리면 408 timeout + Connection: close: web/front.py BodyDeadline) → 검사 · 저장 → 201 {ok, id}
+  동시 업로드 자리는 어떤 경우에도(느린 본문 · 끊김 · 예외) finally에서 돌려줍니다.
 GET/HEAD /img/shrines/up/<16자>.<png|jpg|webp>
   · 맵에 떠 있는 사당의 이미지: 누구나, Cache-Control: public, max-age=86400, ETag = 따옴표로 감싼 이름, 같으면 304
   · 검토 대기 이미지: 올린 사람(24시간) · 관리 비밀번호로 연 사람(3시간) · 운영자만, private, no-store + noindex, 304 없음
@@ -67,6 +69,9 @@ async def upload_api(request: Request) -> NodeResponse:
         return json_response(up.UPLOAD_STATUS.get(slot, 400), {"ok": False, "reason": slot})
     try:
         buf = await read_limited(request, up.UPLOAD_MAX)
+        deadline = request.scope.get("state", {}).get("body_deadline")
+        if buf is None and deadline is not None and deadline.timed_out:
+            return json_response(408, {"ok": False, "reason": "timeout"})
         r = await up.save_upload(ctx, buf, sid, ip_key)
     finally:
         slot.done()

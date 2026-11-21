@@ -8,6 +8,12 @@
   1003 바이너리 · 1008 너무 빠름 · 1009 512바이트 넘음(uvicorn ws_max_size) · 1011 서버 오류 반복 · 1012 서버 재시작
   4001 다른 창에서 같은 표로 입장 · 4002 오래 자리 비움(정원 90% 이상일 때) · 4003 채널 꽉 참 · 4004 강퇴 · 4005 차단됨
 
+보안 점검으로 Node와 일부러 다르게 둔 것:
+  · IP당 동시 연결(WS_MAX_PER_IP, 기본 4) · 새 연결 시도 · 게시판 글 · 초 · 신고는 IPv6를 /64로 묶어 셉니다
+    (logic.crypto.normalize_ip). 주소를 바꿔 가며 정원(60)을 채우지 못하게.
+  · 자리 비움(4002)은 정원 90% 이상일 때 3분 동안 '실제로 한 일'이 없는 사람입니다. 같은 자리 mv를 되풀이해 보내는 것은
+    세지 않고, 위치가 바뀐 이동 · 말풍선 · 감정 · 채팅 · 앉기 · 초 · 기도 · 글 · 신고만 셉니다.
+
 Node와 같게 둔 것: 업그레이드 검사 순서와 거절 상태(503 · 403 · 401 · 429 · 4005 · 503 · 429 · 503), 메시지 칸 · 키 순서,
 쿨다운 · 제한 수치, 100ms 묶음 전송, 5초 정리, 오류 로그 1분 20줄.
 다른 점 (ASGI라서):
@@ -32,7 +38,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote_to_bytes
 
 from .. import moderation
-from ..logic.crypto import TICKET_COOKIE, b64url, parse_cookies, verify_ticket
+from ..logic.crypto import TICKET_COOKIE, b64url, normalize_ip, parse_cookies, verify_ticket
 from ..logic.jsnum import is_integer, js_round, json_stringify
 from ..logic.util import now_ms
 from ..logic.world import CHANNELS, SEATS, SPAWN, SPEED, blocked
@@ -56,8 +62,9 @@ MAX_CONNECTIONS = 900
 CONNECTS_PER_MIN = 30
 MSG_PER_SEC = 15
 MSG_BURST = 30
-#: 채널이 거의 찼을 때(90%) 이만큼 아무 입력이 없는 사람은 자리를 비워 줍니다
-IDLE_MS = 10 * 60_000
+#: 채널이 거의 찼을 때(90%) 이만큼 실제로 한 일(위치가 바뀐 이동 · 채팅 · 감정 등)이 없는 사람은 자리를 비워 줍니다
+#: (보안 점검: Node는 10분 · 아무 메시지나 셈. 같은 자리 mv만 보내 자리를 차지하지 못하게)
+IDLE_MS = 3 * 60_000
 #: 한 사람이 1분에 이만큼 서버 오류를 내면 그 연결만 끊습니다
 ERRORS_PER_MIN = 5
 TICK_S = 0.1
@@ -137,7 +144,8 @@ class Channel:
 class Player:
     __slots__ = (
         "alive", "ban_key", "budget", "channel", "chat_times", "conn", "d", "dirty", "error_times", "exp", "id", "ip_key",
-        "last_ai_pray", "last_chat", "last_chat_at", "last_emote", "last_input_at", "last_move_at", "last_post_at",
+        "last_active_at", "last_ai_pray", "last_chat", "last_chat_at", "last_emote", "last_input_at", "last_move_at",
+        "last_post_at",
         "last_report_at", "last_say", "look", "moving", "nick", "recent", "report_times", "seat", "sid", "since", "tokens",
         "tokens_at", "x", "y",
     )  # fmt: skip
@@ -147,7 +155,7 @@ class Player:
         self.id = pid
         self.sid: str = t["sid"]
         self.conn = conn
-        #: 그날 IP 해시 (web.net.ip_hash)
+        #: 그날 IP 해시 (web.net.ip_hash, IPv6는 /64로 묶은 값). IP당 제한 · 신고한 사람 구분에 씁니다
         self.ip_key = ip_key
         #: 차단용 IP 키 (moderation, 메모리에만)
         self.ban_key = ban_key
@@ -178,6 +186,8 @@ class Player:
         self.alive = True
         self.since = now
         self.last_input_at = now
+        #: 마지막으로 실제로 한 일 (위치가 바뀐 이동 · 채팅 · 감정 …). 자리 비움(4002)은 이것으로 봅니다
+        self.last_active_at = now
         #: 최근 직접 쓴 말풍선 (신고할 때만 씀, 메모리에만)
         self.recent: list[dict[str, Any]] = []
         self.last_report_at = 0
@@ -358,9 +368,14 @@ class Realtime:
         if not ticket:
             return ("deny", 401)
         ip = client_ip(dict(scope), self.config.trust_proxy)
-        ip_key = ip_hash(ip)
+        # IP당 제한은 IPv6를 /64로 묶어 셉니다 (주소를 바꿔 가며 정원을 채우지 못하게). IPv4는 그대로
+        ip_key = ip_hash(normalize_ip(ip) or ip)
         ban_key = moderation.block_key(ctx, ip)
         moderation.remember_visitor(ctx, ip_key, ban_key)
+        raw_key = ip_hash(ip)
+        if raw_key != ip_key:
+            # 다른 곳(HTTP 기록)이 원래 주소의 해시를 쓰더라도 운영자가 그 해시로 차단할 수 있게 둘 다 알려 둡니다
+            moderation.remember_visitor(ctx, raw_key, ban_key)
         # 같은 IP의 연결 폭주는 막되, 동시 연결 수는 넉넉히 (여러 사람이 IP 하나를 같이 쓰는 경우)
         if not self.connect_limiter.allow(ip_key):
             return ("deny", 429)
@@ -535,10 +550,10 @@ class Realtime:
         now = now_ms()
         # 운영 명령(다른 프로세스)이 바꾼 차단을 읽어 오면 on_blocks_changed → enforce_blocks
         await moderation.refresh_blocks(self.ctx)
-        # 채널이 거의 찼을 때만, 오래 아무것도 안 한 사람의 자리를 비웁니다
+        # 채널이 거의 찼을 때만, 3분 동안 실제로 한 일이 없는 사람의 자리를 비웁니다 (같은 자리 mv는 세지 않음)
         if self.total >= math.ceil(CAPACITY * 0.9):
             for p in self.all_players():
-                if now - p.last_input_at > IDLE_MS and p.conn.state == OPEN:
+                if now - p.last_active_at > IDLE_MS and p.conn.state == OPEN:
                     p.conn.close(4002, "idle")
         if now - self.pruned_at >= 3600_000:
             from ..logic.util import kst_date

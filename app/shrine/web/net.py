@@ -7,7 +7,7 @@ IP는 그날만 쓰는 무작위 값(소금)과 섞은 해시로만 다룹니다
 
 from __future__ import annotations
 
-from ..logic.crypto import DailyIpHasher
+from ..logic.crypto import DailyIpHasher, normalize_ip
 from ..logic.jsstr import js_trim
 
 # Node가 같은 이름 머리글을 여러 번 받으면 버리고 첫 값만 두는 것 (그 밖은 ', '로 이음, cookie는 '; ')
@@ -19,7 +19,8 @@ _DISCARD_DUPLICATES = frozenset(
     }
 )
 
-# Node http 서버 maxHeadersCount (main.ts:45): 이보다 많은 머리글은 버림
+# Node http 서버 maxHeadersCount (main.ts:45). Node는 넘는 머리글을 버리지만, 여기서는 431로 거절합니다
+# (보안 점검: 버리면 X-Forwarded-For가 빠져 IP별 제한 · 차단을 비켜 갈 수 있었음. web/front.py)
 MAX_HEADERS = 50
 
 
@@ -46,6 +47,17 @@ def client_ip(scope: dict, trust_proxy: bool) -> str:
     return client[0] if client else "unknown"
 
 
-#: 그날만 유효한 IP 해시: base64url(sha256(소금16 || ip)) 앞 22자 (logic.crypto.DailyIpHasher).
-#: 프로세스에 하나 (Node security.ts의 모듈 변수와 같음)
-ip_hash = DailyIpHasher()
+class _LimitIpHasher(DailyIpHasher):
+    """요청 제한 키용: IPv6는 /64, ::ffff:a.b.c.d는 IPv4로 묶은 뒤 해시합니다 (차단 키 block_key와 같은 단위).
+
+    보안 점검: Node는 IPv6 주소 전체(/128)를 해시해서, /64 하나를 가진 사람이 주소만 바꿔 가며 IP별 제한
+    (요청 · 입장 · 접수 · PIN · 업로드 하루 한도 등)을 새로 받을 수 있었습니다. IP가 아닌 값은 그대로 해시합니다.
+    """
+
+    def __call__(self, ip: str) -> str:
+        return super().__call__(normalize_ip(ip) or ip)
+
+
+#: 그날만 유효한 IP 해시: base64url(sha256(소금16 || IPv4 또는 IPv6 /64)) 앞 22자 (logic.crypto.DailyIpHasher).
+#: 프로세스에 하나 (Node security.ts의 모듈 변수와 같음). 실시간(realtime/core.py)도 이것을 씁니다
+ip_hash = _LimitIpHasher()

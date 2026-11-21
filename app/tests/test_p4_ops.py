@@ -265,10 +265,17 @@ async def test_login_lockout_windows(ctx):
     await admin_auth.clear_ip_fails(ctx, "ip-a")
     for i in range(49):
         await admin_auth.add_login_fail(ctx, f"ip-{i}", t1 + 1)
+    # 보안 점검: 전체 잠금은 ADMIN_IPS가 비었을 때만 (이 ctx는 ADMIN_IPS가 있어 잠깐 비워서 봄)
+    st = admin_auth.setup(ctx)
+    ips, st.ips = st.ips, []
     assert not await admin_auth.login_locked(ctx, "ip-new", t1 + 2)
     await admin_auth.add_login_fail(ctx, "ip-x", t1 + 3)
     assert await admin_auth.login_locked(ctx, "ip-new", t1 + 4)  # 전체 15분에 50번
+    st.ips = ips
+    assert not await admin_auth.login_locked(ctx, "ip-new", t1 + 4)  # ADMIN_IPS가 있으면 전체 잠금 없음
+    st.ips = []
     assert not await admin_auth.login_locked(ctx, "ip-new", t1 + 15 * 60_000)
+    st.ips = ips
 
 
 # ── 운영자 API 작은 함수 ─────────────────────────────────────────────

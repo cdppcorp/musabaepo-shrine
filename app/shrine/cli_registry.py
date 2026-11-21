@@ -235,7 +235,7 @@ async def _upload(ctx: AppContext, args: list[str]) -> None:
     # Node는 운영 명령마다 새 메모리라 할당량이 사실상 없었습니다 → 세지 않음
     r = await save_upload(ctx, buf, "cli", "cli", quotas=False)
     if not r["ok"]:
-        why = {"type": "PNG · JPEG · WebP만 됩니다", "size": "10MB까지입니다", "full": "이미지 저장 공간이 꽉 찼습니다"}
+        why = {"type": "PNG · JPEG · WebP만 됩니다", "size": "5MB까지입니다", "full": "이미지 저장 공간이 꽉 찼습니다"}
         raise CliFail(f"올리지 못했습니다: {why.get(r['reason'], r['reason'])}")
     print(f'올렸습니다: up/{r["id"]}  (사당 JSON의 "screens": ["up/{r["id"]}"]. 하루 안에 사당에 쓰지 않으면 지워집니다)')
 

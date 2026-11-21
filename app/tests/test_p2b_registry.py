@@ -107,7 +107,8 @@ async def test_pin_lock_sequence_and_concurrency(ctx):
 async def test_day_lock_persists_and_is_atomic(ctx):
     r = await submit(ctx)
     pid = r["id"]
-    locks = await asyncio.gather(*(reg._add_day_fail(ctx, pid, now_ms()) for _ in range(25)))
+    # 보안 점검: 접수 전체 하루 한도는 200번 ((접수, IP)마다 20번은 Redis: test_sec_http.py)
+    locks = await asyncio.gather(*(reg._add_day_fail(ctx, pid, now_ms()) for _ in range(reg.PIN_FAILS_PER_PROJECT_DAY + 5)))
     assert locks.count(True) == 1
     async with ctx.db.session() as s:
         fails, until = (await s.execute(text("SELECT fails, until FROM pin_locks WHERE project_id = :id"), {"id": pid})).one()

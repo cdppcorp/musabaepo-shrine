@@ -395,12 +395,11 @@ docker compose exec caddy ls -l /var/log/caddy                   # 넘긴 파일
 
 **Cloudflare 프록시를 켤 때**
 
-`Caddyfile`에서 아래 두 곳의 주석을 함께 풉니다.
+`Caddyfile` 전역의 `servers { trusted_proxies … }` 주석만 풉니다.
 
-- 전역 `servers { trusted_proxies … }`
-- `reverse_proxy` 안의 `header_up X-Forwarded-For {client_ip}`
-
-하나만 풀면 방문자 IP가 Cloudflare IP로 보이거나 위조된 값이 들어갑니다.
+- `reverse_proxy` 안의 `header_up X-Forwarded-For {client_ip}`는 늘 켜 둡니다 (보안 점검). 앱이 받는 X-Forwarded-For가
+  늘 값 하나(Caddy가 판단한 방문자 IP)라서, `trusted_proxies`를 켜도 방문자가 보낸 값이 앞에 남아 IP를 꾸미지 못합니다.
+- `trusted_proxies`를 풀지 않으면 모든 방문자가 Cloudflare IP로 보여 IP 제한에 같이 걸립니다.
 
 **www 주소**
 
@@ -475,16 +474,32 @@ C="docker compose --env-file ../.env -f docker-compose.py.yml"
 | `api` (별칭 `shrine`) | 앱 (FastAPI + uvicorn 워커 1개, HTTP + WebSocket) | 없음. Caddy만 3300으로 붙습니다 |
 | `postgres` | DB (PostgreSQL 17) | 없음 |
 | `redis` | 요청 제한 · 잠금 · 로그아웃한 운영자 세션 같은 짧은 상태. 디스크에 쓰지 않음 | 없음 |
-| `caddy` | Node 구성과 같은 `Caddyfile` | 80/tcp, 443/tcp, 443/udp |
+| `caddy` | Node 구성과 같은 `Caddyfile`. 환경 변수는 `SHRINE_DOMAIN` · `ACME_EMAIL`만 받음 | 80/tcp, 443/tcp, 443/udp |
+| `backup` | 백업 만들기 · 정리 · 검사. 늘 떠 있지 않고 `run --rm`으로만 (profile `tools`, 네트워크 없음) | 없음 |
 
 | 저장 위치 | 내용 |
 |---|---|
 | 볼륨 `pg-data` | DB 전부 (사당 · 접수 · 초 · 글 · 차단 · 운영 기록) |
 | 볼륨 `api-data` (`/data`) | `uploads/`(등록소 이미지) |
-| 호스트 `deploy/backups/` (`/backups`) | 백업 tar 파일 (Node 구성과 같은 폴더, 주인 uid 1000) |
+| 호스트 `deploy/backups/` (`/backups`) | 백업 tar 파일 (Node 구성과 같은 폴더, 주인 uid 1000). `api`는 읽기만, 쓰기는 `backup`만 |
 
 - Redis는 다시 띄우면 비어 있습니다 (Node의 메모리와 같음). 오래 남아야 하는 것은 모두 PostgreSQL에 있습니다.
 - 백업 폴더 주인은 Node 때와 같이 `sudo chown 1000:1000 backups && sudo chmod 700 backups`입니다.
+- Redis는 메모리(64MB)가 차면 키를 버리지 않고 새 쓰기를 거절합니다 (`noeviction`). 로그인 · PIN 잠금 같은 보안 키가 밀려나 풀리지 않게.
+- DB 계정은 둘입니다 (보안 점검).
+  - `shrine_app`: 앱(`api`)이 붙는 계정. 슈퍼유저 · 역할 만들기 · DB 만들기 권한이 없고, DB `shrine`의 주인이라 표를 만들고(Alembic) 씁니다. 비밀번호는 `.env`의 `APP_DB_PASSWORD`.
+  - `shrine`: 관리자(슈퍼유저). postgres 컨테이너 안 소켓으로만 받습니다 (`$C exec -T postgres pg_dump -U shrine …`). 네트워크로는 거절하므로, 앱 컨테이너가 `.env`의 `POSTGRES_PASSWORD`를 알아도 슈퍼유저로 붙지 못합니다.
+  - 볼륨이 빈 첫 실행에서 `deploy/postgres-init/10-app-role.sh`가 만듭니다. `.env`에 `POSTGRES_PASSWORD` · `APP_DB_PASSWORD`(둘 다 `openssl rand -hex 24`)가 있어야 합니다.
+- 이 변경 전에 만든 `pg-data` 볼륨은 첫 실행 스크립트가 돌지 않습니다. 시험용이면 `$C down -v`로 지우고 다시 띄우는 것이 가장 간단하고, 데이터를 남기려면 한 번 손으로 옮깁니다.
+
+  ```bash
+  $C up -d postgres                                                   # 새 설정(APP_DB_PASSWORD · postgres-init)으로 다시 만듦
+  $C exec -T postgres sh /docker-entrypoint-initdb.d/10-app-role.sh     # shrine_app · DB 주인 · 슈퍼유저 TCP 거절
+  $C exec -T postgres psql -U shrine -d shrine -v ON_ERROR_STOP=1 \
+    -c "DO \$\$DECLARE r record; BEGIN FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP EXECUTE format('ALTER TABLE public.%I OWNER TO shrine_app', r.tablename); END LOOP; END\$\$" \
+    -c 'SELECT pg_reload_conf()'
+  $C up -d                                                            # api가 shrine_app으로 다시 붙음
+  ```
 
 ### 13.2 운영 도구 (CLI)
 
@@ -510,7 +525,12 @@ $C exec -T api python -m shrine.cli schema                     # DB 구조 버�
 ### 13.3 운영자 화면
 
 Node와 같습니다 (4장 · 11장): `ADMIN_PASSWORD`(16자 이상)를 넣어야 켜지고, `ADMIN_IPS` 밖이면 404, 같은 출처 · 세션 쿠키 ·
-로그인 잠금(IP당 15분 5번, 전체 15분 50번) · 모든 작업을 `admin_log`에 남기는 것까지 같습니다. 다른 점은 하나입니다.
+로그인 잠금(IP당 15분 5번, 전체 15분 50번) · 모든 작업을 `admin_log`에 남기는 것까지 같습니다. 다른 점은 둘입니다.
+
+- `ADMIN_IPS`가 있으면 서버 전체 잠금(15분 50번)은 쓰지 않고 IP별 잠금만 씁니다 (보안 점검). 그때 로그인까지 오는 요청은
+  `ADMIN_IPS`뿐이라, 남이 전체 잠금을 걸어 운영자를 15분 동안 막을 수 없습니다. 운영에서 `ADMIN_PASSWORD`가 있는데
+  `ADMIN_IPS`가 비어 있으면 시작할 때 `[shrine] 설정 경고: ADMIN_IPS가 비어 있습니다 …`가 나옵니다 (시작은 함).
+  `ADMIN_IPS`나 Caddyfile의 `@adminOutside`로 들어올 IP를 정해 두길 권합니다.
 
 - 로그아웃한 세션 목록을 Redis에 둡니다 (세션이 끝나는 시각까지). 그래서 앱만 다시 띄워도 로그아웃한 쿠키는 계속 막힙니다.
   비밀번호를 바꾸고 다시 띄우면 예전 세션이 모두 끊기는 것은 Node와 같습니다.
@@ -523,7 +543,9 @@ Node와 같습니다 (4장 · 11장): `ADMIN_PASSWORD`(16자 이상)를 넣어�
   - `db.dump`: `pg_dump --format=custom`(-Fc). 서버가 도는 중에도 한 시점의 사본입니다 (pg_dump는 트랜잭션 하나로 뜸).
   - `uploads/`: 등록소 이미지. DB 덤프를 다 받은 뒤에 넣으므로, 덤프가 가리키는 이미지는 모두 들어갑니다.
   - `manifest.json`: 표별 행 수(덤프 안의 데이터를 풀어 센 수) · 이미지 수 · 파일별 SHA-256 · pg_dump 버전.
-- 앱 컨테이너에는 `pg_dump`가 없습니다. **호스트 cron이 postgres 컨테이너의 pg_dump를 앱 컨테이너의 백업 도구로 파이프로 넘깁니다** (결정 D8).
+- 앱 컨테이너에는 `pg_dump`가 없습니다. **호스트 cron이 postgres 컨테이너의 pg_dump를 `backup` 컨테이너(앱과 같은 이미지)의 백업 도구로 파이프로 넘깁니다** (결정 D8).
+- `api`는 백업 폴더를 읽기만 합니다 (보안 점검). 앱이 뚫려도 백업을 지우거나 가짜 백업을 넣어 두지 못하게, 만들기 · 정리는
+  한 번 띄우고 지우는 `backup` 컨테이너(네트워크 없음, `.env` 비밀 값 없음, 이미지 폴더는 읽기만)가 합니다.
 - 보관 기간도 7장과 같습니다: 최근 `BACKUP_KEEP`개(14) · 만든 지 `BACKUP_MAX_DAYS - 1`일(13일). 복구 때 뜬
   `backups/pre-restore-*.dump`(DB 전체 사본)도 같은 기한으로 지웁니다.
 - Node 백업(`version 1`, `shrine.db`)은 Python 서버에 되살릴 수 없습니다 (도구가 알려 주고 멈춤). 이전은 빈 DB로 시작합니다 (결정 D4).
@@ -531,10 +553,10 @@ Node와 같습니다 (4장 · 11장): `ADMIN_PASSWORD`(16자 이상)를 넣어�
 **명령**
 
 ```bash
-$C exec -T postgres pg_dump -U shrine -d shrine --format=custom | $C exec -T api python -m shrine.backup create --dump -   # 만들기
-$C exec -T api python -m shrine.backup list                          # 목록
-$C exec -T api python -m shrine.backup verify /backups/<파일>         # 검사
-$C exec -T api python -m shrine.backup prune                         # 정리만
+$C exec -T postgres pg_dump -U shrine -d shrine --format=custom | $C run --rm --no-deps -T backup create --dump -   # 만들기
+$C run --rm --no-deps backup list                          # 목록
+$C run --rm --no-deps backup verify /backups/<파일>         # 검사
+$C run --rm --no-deps backup prune                         # 정리만
 ```
 
 - `verify`가 확인하는 것
@@ -544,6 +566,16 @@ $C exec -T api python -m shrine.backup prune                         # 정리만
 - 덤프가 비었거나 중간에 끊겼으면(pg_dump 실패) 백업 도구가 `[backup] …`을 쓰고 1로 끝나며 아무것도 남기지 않습니다.
 - 로컬 개발: `app/`에서 `uv run python -m shrine.backup --env-file ../.env create`. `pg_dump`가 PATH에 있으면 `DATABASE_URL`로 직접 뜨고,
   없으면 `PG_DUMP`(명령 통째로, 예: `PG_DUMP="docker exec -i <pg 컨테이너> pg_dump -U shrine -d shrine -Fc"`)나 `--dump`를 씁니다.
+
+**서명 (선택, 보안 점검)**
+
+- manifest의 SHA-256은 백업 안에서만 맞춰 보는 값입니다. 서명을 켜면 운영자 키 없이는 맞는 백업을 만들 수 없습니다.
+- `BACKUP_SIGNING_KEY`(32자 이상, `openssl rand -hex 32`)가 있으면 만들 때 `manifest.json`의 HMAC-SHA256을 `manifest.sig`로 넣고,
+  `verify` · `restore`는 서명이 없거나 틀리면 멈춥니다. 키가 없으면 서명은 보지 않습니다 (예전처럼 SHA-256 검사만).
+- 키는 `.env`에 넣지 않습니다 (`api`가 `.env`를 통째로 받음). 운영자만 읽는 파일에 둡니다:
+  `sudo install -d -m 700 /etc/musabaepo-shrine && openssl rand -hex 32 | sudo tee /etc/musabaepo-shrine/backup.key >/dev/null && sudo chmod 600 /etc/musabaepo-shrine/backup.key`
+- 셸에 `export BACKUP_SIGNING_KEY="$(sudo cat /etc/musabaepo-shrine/backup.key)"`를 한 뒤 `backup` 명령은 그대로(compose가 넘김),
+  `api`로 하는 복구 명령은 `-e BACKUP_SIGNING_KEY`를 붙여 씁니다 (13.5). 키를 서버 밖에도 따로 보관해 둡니다.
 
 **매일 자동으로 + 서버 밖 사본**
 
@@ -555,13 +587,15 @@ $C exec -T api python -m shrine.backup prune                         # 정리만
 set -eu
 cd /srv/musabaepo-shrine/deploy
 C="docker compose --env-file ../.env -f docker-compose.py.yml"
-# postgres 컨테이너의 pg_dump(-Fc) → api 컨테이너의 백업 도구(표준 입력). 덤프가 비거나 끊기면 백업 도구가 1로 끝나 set -e로 멈춥니다
-$C exec -T postgres pg_dump -U shrine -d shrine --format=custom | $C exec -T api python -m shrine.backup create --dump -
+# (선택) 백업 서명 키: .env가 아니라 운영자만 읽는 파일에서 (13.4 '서명')
+if [ -r /etc/musabaepo-shrine/backup.key ]; then BACKUP_SIGNING_KEY="$(cat /etc/musabaepo-shrine/backup.key)"; export BACKUP_SIGNING_KEY; fi
+# postgres 컨테이너의 pg_dump(-Fc) → backup 컨테이너의 백업 도구(표준 입력). 덤프가 비거나 끊기면 백업 도구가 1로 끝나 set -e로 멈춥니다
+$C exec -T postgres pg_dump -U shrine -d shrine --format=custom | $C run --rm --no-deps -T backup create --dump -
 # 서버 밖 사본 (7장과 같음: sync / --delete라서 14일 규칙을 같이 지킴)
 rclone sync ./backups shrine-offsite:musabaepo-shrine --include 'shrine-*.tar'
 ```
 
-`/etc/cron.d/musabaepo-shrine` (Node 때 줄을 이 줄로 바꿉니다):
+`/etc/cron.d/musabaepo-shrine` (Node 때 줄을 이 줄로 바꿉니다. 줄은 같고 바뀐 것은 위 스크립트입니다):
 
 ```
 30 4 * * * root /usr/local/bin/shrine-backup 2>&1 | logger -t shrine-backup
@@ -579,17 +613,19 @@ rclone sync ./backups shrine-offsite:musabaepo-shrine --include 'shrine-*.tar'
 cd /srv/musabaepo-shrine/deploy
 C="docker compose --env-file ../.env -f docker-compose.py.yml"
 F=/backups/shrine-20261117-193000Z.tar      # 컨테이너 안 경로 (호스트의 deploy/backups/…)
+# (서명을 쓰면) export BACKUP_SIGNING_KEY="$(sudo cat /etc/musabaepo-shrine/backup.key)"
 # 0) 먼저 검사
-$C exec -T api python -m shrine.backup verify $F
+$C run --rm --no-deps backup verify $F
 # 1) 앱 멈춤 (그동안 Caddy가 '잠시 정비 중' 화면을 보여 줌)
 $C stop api
 # 2) 지금 DB 사본 (되살린 뒤 문제가 있으면 이걸로 되돌림. 13일 뒤 prune이 지움)
 $C exec -T postgres pg_dump -U shrine -d shrine --format=custom > backups/pre-restore-$(date -u +%Y%m%d-%H%M%S)Z.dump
 # 3) DB: 검사한 db.dump를 꺼내 postgres 컨테이너의 pg_restore로 (한 트랜잭션: 실패하면 DB는 그대로)
-$C run --rm --no-deps -T api python -m shrine.backup restore $F --db-to - \
-  | $C exec -T postgres pg_restore -U shrine -d shrine --clean --if-exists --no-owner --no-privileges --single-transaction --exit-on-error
+#    -U shrine_app: 되살린 표의 주인이 앱 계정이 되게 (슈퍼유저로 되살리면 앱이 표를 못 씀)
+$C run --rm --no-deps -T -e BACKUP_SIGNING_KEY api python -m shrine.backup restore $F --db-to - \
+  | $C exec -T postgres pg_restore -U shrine_app -d shrine --clean --if-exists --no-owner --no-privileges --single-transaction --exit-on-error
 # 4) 이미지: 지금 이미지는 /data/pre-restore-<시각>Z/로 옮겨 두고 바꿔 넣음
-$C run --rm --no-deps api python -m shrine.backup restore $F --uploads-only
+$C run --rm --no-deps -e BACKUP_SIGNING_KEY api python -m shrine.backup restore $F --uploads-only
 # 5) 다시 시작하고 확인
 $C up -d
 $C ps && curl https://<도메인>/healthz
@@ -598,7 +634,7 @@ $C run --rm --no-deps api sh -c 'rm -rf /data/pre-restore-*'
 ```
 
 - 3)에서 pg_restore가 실패하면 `set -e`가 없어도 DB는 바뀌지 않습니다 (`--single-transaction`). 그때는 4)로 넘어가지 말고 까닭을 봅니다.
-- 2)의 사본으로 되돌리기: `$C exec -T postgres pg_restore -U shrine -d shrine --clean --if-exists --no-owner --no-privileges --single-transaction --exit-on-error < backups/pre-restore-<시각>Z.dump`
+- 2)의 사본으로 되돌리기: `$C exec -T postgres pg_restore -U shrine_app -d shrine --clean --if-exists --no-owner --no-privileges --single-transaction --exit-on-error < backups/pre-restore-<시각>Z.dump`
 - Docker 없이 (로컬 · 일반 서버, `pg_dump` · `pg_restore`가 있을 때): 서버를 멈춘 뒤
   `uv run python -m shrine.backup --env-file ../.env restore <파일>` 한 번이면 위 2)~4)를 차례로 합니다
   (지금 DB는 `DATA_DIR/pre-restore-<시각>Z/db.dump`, 이미지는 같은 폴더의 `uploads/`로 옮겨 둠).
@@ -606,10 +642,10 @@ $C run --rm --no-deps api sh -c 'rm -rf /data/pre-restore-*'
 **복구 연습** (분기에 한 번 권장, 운영 DB는 건드리지 않음)
 
 ```bash
-$C exec -T api python -m shrine.backup verify /backups/<파일>
-$C exec -T postgres createdb -U shrine shrine_drill
+$C run --rm --no-deps backup verify /backups/<파일>
+$C exec -T postgres createdb -U shrine -O shrine_app shrine_drill
 $C exec -T api sh -c 'tar -xOf /backups/<파일> db.dump' \
-  | $C exec -T postgres pg_restore -U shrine -d shrine_drill --no-owner --no-privileges --single-transaction --exit-on-error
+  | $C exec -T postgres pg_restore -U shrine_app -d shrine_drill --no-owner --no-privileges --single-transaction --exit-on-error
 $C exec -T postgres psql -U shrine -d shrine_drill -c 'SELECT count(*) FROM shrines' -c 'SELECT count(*) FROM projects'
 # 행 수가 verify의 '표:' 줄과 같은지 보고 지웁니다
 $C exec -T postgres dropdb -U shrine shrine_drill
@@ -620,9 +656,15 @@ $C exec -T postgres dropdb -U shrine shrine_drill
 | 항목 | Node | Python |
 |---|---|---|
 | DB | `shrine-data` 볼륨의 SQLite 파일 | `pg-data` 볼륨의 PostgreSQL |
-| 백업 만들기 | `exec shrine node server/backup.ts` 한 줄 | postgres의 `pg_dump` → api의 `python -m shrine.backup create --dump -` (파이프) |
+| 백업 만들기 | `exec shrine node server/backup.ts` 한 줄 | postgres의 `pg_dump` → `backup` 컨테이너의 `create --dump -` (파이프, `run --rm`) |
 | 백업 안의 DB | `shrine.db` | `db.dump` (pg_dump -Fc), manifest `version: 2` |
 | 복구 | `restore` 한 번 | DB(`--db-to -` → pg_restore)와 이미지(`--uploads-only`) 두 번 |
 | 복구 전 사본 | `DATA_DIR/pre-restore-…/` (DB + 이미지) | DB는 `backups/pre-restore-….dump`(prune이 13일 뒤 지움), 이미지는 `/data/pre-restore-…/` |
 | DB 구조 바꾸기 전 사본 | `pre-migrate/` | 없음 (Alembic, 업데이트 전 백업으로 대신) |
 | 로그아웃한 운영자 세션 | 메모리 (앱을 다시 띄우면 잊음) | Redis (세션이 끝날 때까지) |
+| 실시간 IP당 동시 연결 기본값 (`WS_MAX_PER_IP`) | 12 | 4 (IPv6는 /64를 한 IP로 셈) |
+| 자리 비움으로 끊기 (정원 90% 이상) | 10분 동안 아무 메시지 없음 | 3분 동안 실제로 한 일 없음 (같은 자리 이동 신호는 세지 않음) |
+| 게시판 글이 신고로 숨는 조건 | 서로 다른 IP 해시 3개 | IP(/64) · 입장 표가 둘 다 다른 3명 |
+| 운영자 전체 로그인 잠금 (15분 50번) | 늘 | `ADMIN_IPS`가 있으면 쓰지 않음 (IP별 잠금은 같음) |
+| 앱의 DB 계정 | (SQLite) | `shrine_app` (슈퍼유저 아님) |
+| 백업 폴더 | 앱이 씀 | 앱은 읽기만, `backup` 컨테이너가 씀 (서명은 선택) |

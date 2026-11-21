@@ -97,10 +97,14 @@ async def on_message(rt: Realtime, p: Player, msg: dict[str, Any]) -> None:
     handler = HANDLERS.get(t) if isinstance(t, str) else None
     if handler is None:
         return
+    before = (p.x, p.y)
     try:
         await handler(rt, p, m)
     except Exception as e:  # noqa: BLE001
         rt.on_handler_error(p, kind, e)
+    # 자리 비움 판정 (보안 점검): 같은 자리 mv를 되풀이하는 것은 '한 일'로 세지 않습니다
+    if t in ACTIVE_KINDS or (t == "mv" and (p.x, p.y) != before):
+        p.last_active_at = now_ms()
 
 
 async def on_move(rt: Realtime, p: Player, m: dict[str, Any]) -> None:
@@ -194,13 +198,13 @@ async def on_post(rt: Realtime, p: Player, m: dict[str, Any]) -> None:
 
 
 async def on_report(rt: Realtime, p: Player, m: dict[str, Any]) -> None:
-    """게시판 글 신고: 서로 다른 사람(IP 해시) 3명이면 숨기고 모두에게 알립니다."""
+    """게시판 글 신고: 서로 다른 사람(IP /64 해시 · 입장 표 둘 다 다름) 3명이면 숨기고 모두에게 알립니다."""
     pid = to_number(_get(m, "id"))
     if not rt.config.board_open:
         return rt.send(p, {"t": "reportNo", "id": pid if is_integer(pid) else 0, "reason": "closed"})
     if not is_integer(pid) or pid <= 0:
         return None
-    r = await report_post(rt.ctx, pid, p.ip_key)
+    r = await report_post(rt.ctx, pid, p.ip_key, p.sid)
     if r == "none":
         return None
     rt.send(p, {"t": "reported", "id": pid})
@@ -370,10 +374,13 @@ async def on_chans(rt: Realtime, p: Player, m: dict[str, Any]) -> None:
     rt.send(p, {"t": "chans", "list": rt.chan_list()})
 
 
+#: 자리 비움(4002)을 미루는 메시지 (mv는 위치가 실제로 바뀐 때만, chans는 세지 않음)
+ACTIVE_KINDS = frozenset({"say", "emo", "chat", "sit", "aipray", "post", "report", "reportUser", "light"})
+
 HANDLERS: dict[str, Callable[[Realtime, Player, dict[str, Any]], Awaitable[None]]] = {
     "mv": on_move, "say": on_say, "emo": on_emote, "chat": on_chat, "sit": on_sit, "aipray": on_ai_pray, "post": on_post,
     "report": on_report, "reportUser": on_report_user, "light": on_light, "chans": on_chans,
 }  # fmt: skip
 
-__all__ = ["HANDLERS", "on_message", "stand_up", "take_token"]
+__all__ = ["ACTIVE_KINDS", "HANDLERS", "on_message", "stand_up", "take_token"]
 _ = OPEN

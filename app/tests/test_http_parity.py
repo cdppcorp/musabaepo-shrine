@@ -320,15 +320,9 @@ def cases(b: str, variant: str) -> list[Req]:
         Req("GET", "/healthz?x=1", []),
         Req("POST", "/healthz", []),
         Req("GET", "/healthz/", []),
-        # 머리글 처리: Host 정리(CSP ws 주소), 50개 넘는 머리글은 버림
+        # 머리글 처리: Host 정리(CSP ws 주소). 50개 넘는 머리글은 일부러 다름 → test_too_many_headers_intended_difference
         Req("GET", f"{b}/nope", [("Host", 'EXAMPLE.org:8080"<x>')], name="Host 정리"),
         Req("GET", f"{b}/nope", [("Host", "")], name="빈 Host"),
-        Req(
-            "GET",
-            f"{b}/nope",
-            [(f"X-Fill-{i}", "1") for i in range(52)] + [HTML],
-            name="머리글 50개 넘음 (Accept는 버려짐)",
-        ),
         Req("GET", f"{b}/nope", [(f"X-Fill-{i}", "1") for i in range(40)] + [HTML], name="머리글 41개"),
         Req("GET", f"{b}/style.css", [("If-None-Match", "x"), ("If-None-Match", "@etag:" + f"{b}/style.css")], name="If-None-Match 두 줄"),
     ]
@@ -462,6 +456,24 @@ def test_rate_limit_and_healthz_exempt(servers):
     assert node[2].status == py[2].status == 200
     assert node[3].status == py[3].status == 200
     assert node[4].status == py[4].status == 429
+
+
+@pytest.mark.parametrize("servers", ["root"], indirect=True)
+def test_too_many_headers_intended_difference(servers):
+    """보안 점검 (일부러 다름): Node는 50개 넘는 머리글을 버리고(→ Accept가 빠져 글자 404), Python은 431로 거절합니다.
+    버리면 X-Forwarded-For도 빠져 IP별 요청 제한 · 차단을 비켜 갈 수 있었습니다 (web/front.py). Node는 그대로 둡니다."""
+    req = Req("GET", "/nope", [(f"X-Fill-{i}", "1") for i in range(52)] + [HTML])
+    hdrs = build_headers(req, "10.9.9.52", {})
+    node = send_raw(NODE_PORT, "GET", "/nope", hdrs)
+    py = send_raw(PY_PORT, "GET", "/nope", hdrs)
+    assert node.status == 404 and py.status == 431 and py.body == b"Request Header Fields Too Large"
+    # 50개까지는 둘이 같음 (위 test_parity의 '머리글 41개'와 함께)
+    req = Req("GET", "/nope", [(f"X-Fill-{i}", "1") for i in range(50 - 5)] + [HTML])
+    hdrs = build_headers(req, "10.9.9.50", {})
+    assert len(hdrs) + 1 == 50  # send_raw가 Connection: close를 붙임
+    node = send_raw(NODE_PORT, "GET", "/nope", hdrs)
+    py = send_raw(PY_PORT, "GET", "/nope", hdrs)
+    assert node.status == py.status == 404 and compare(req, node, py) == []
 
 
 @pytest.mark.parametrize("servers", ["root"], indirect=True)

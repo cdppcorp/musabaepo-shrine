@@ -73,6 +73,8 @@ class Database:
             pool_pre_ping=True,
             pool_recycle=1800,
             pool_timeout=10,
+            # 보안 점검: 예외 · 로그에 SQL 매개변수(이메일 · PIN 해시 · 글 내용)를 남기지 않습니다
+            hide_parameters=True,
             connect_args={
                 "timeout": 5,
                 "command_timeout": 30,

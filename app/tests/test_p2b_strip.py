@@ -98,6 +98,31 @@ def corpus() -> list[bytes]:
     return out
 
 
+def _jpeg_intended(py: dict, node: dict) -> bool:
+    """보안 점검: JPEG 지우기만 Node와 일부러 다릅니다 (uploads._strip_jpeg). Node는 첫 SOS부터 끝까지 그대로 두고,
+    Python은 그 뒤의 APPn · COM과 EOI 뒤 꼬리를 더 빼거나(첫 SOS까지는 같은 바이트, 더 짧고 EOI로 끝남)
+    SOS 뒤 구조가 깨졌거나 EOI가 없으면 받지 않습니다(None → 'type'). 그 밖(PNG · WebP · 형식 판별)은 같아야 합니다."""
+    if py["sniff"] != node["sniff"]:
+        return False
+    if any(py["strip"][k] != node["strip"][k] for k in ("png", "webp")):
+        return False
+    p, w = py["strip"]["jpg"], node["strip"]["jpg"]
+    if p != w:
+        if w is None:
+            return False
+        if p is not None:
+            pb, wb = bytes.fromhex(p), bytes.fromhex(w)
+            k = max(wb.find(b"\xff\xda"), 2)
+            if pb[:k] != wb[:k] or len(pb) >= len(wb) or not pb.endswith(b"\xff\xd9"):
+                return False
+    pc, wc = py["clean"], node["clean"]
+    if pc == wc:
+        return True
+    if not (isinstance(wc, dict) and wc["ext"] == "jpg"):
+        return False
+    return pc == "type" if p is None else pc == {"ext": "jpg", "hex": p}
+
+
 def py_side(b: bytes) -> dict:
     try:
         s = uploads.sniff_image(b)
@@ -117,7 +142,11 @@ def test_images_byte_identical_with_node():
     cases = corpus()
     want = node_ref({"op": "images", "cases": [b.hex() for b in cases]})
     assert len(want) == len(cases)
-    mismatches = [(i, cases[i][:24].hex(), py_side(b), w) for i, (b, w) in enumerate(zip(cases, want)) if py_side(b) != w]
+    mismatches = [
+        (i, cases[i][:24].hex(), py_side(b), w)
+        for i, (b, w) in enumerate(zip(cases, want))
+        if py_side(b) != w and not _jpeg_intended(py_side(b), w)
+    ]
     assert not mismatches, mismatches[:3]
     # 시험이 정말 여러 갈래를 지나는지
     kinds = {json.dumps(w["clean"], sort_keys=True)[:12] for w in want}

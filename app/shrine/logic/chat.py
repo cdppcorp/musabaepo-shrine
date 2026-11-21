@@ -13,7 +13,9 @@ JS 정규식과 같은 뜻이 되도록 맞춘 것:
 
 - ``NFC``: V8 ``normalize('NFC')``는 ICU 78(유니코드 17)입니다. Python ``unicodedata``는 15.1이라 쓰지 않고,
   Ada 정규화 표 + 유니코드 16 · 17 보충(``ada_idna.nfc_v8_str``)을 씁니다 (코드 포인트 전체를 Node와 맞춰 본 시험이 있습니다).
-- ``\\p{Cc}\\p{Cf}`` · ``\\p{P}\\p{S}`` (u 플래그): ``regex`` 모듈 (유니코드 17 표). 짝 없는 서로게이트(Cs)는 지우지 않습니다.
+- ``\\p{Cc}\\p{Cf}`` · ``\\p{P}\\p{S}`` (u 플래그): ``regex`` 모듈 (유니코드 17 표).
+- 짝 없는 서로게이트(Cs): 보안 점검으로 Node와 일부러 다르게 NFC 전에 지웁니다 (``LONE_SURROGATE``).
+  Node는 그대로 두었지만 PostgreSQL text에 넣을 수 없어 DB 오류(500)가 났습니다. NUL 같은 제어 문자(Cc)는 원래 지움.
 - ``\\s`` · ``trim()``: JS 공백 목록(``jsstr.JS_WS``)을 그대로 씁니다 (Python ``\\s`` · ``strip()``과 다름).
 - u 플래그 없는 ``i`` · ``\\b`` · ``\\w`` · ``\\d``: ``re.ASCII`` (``ſ`` · ``K``(켈빈) 같은 글자가 a-z로 접히지 않음,
   ``abc.com가``의 ``m|가``는 단어 경계).
@@ -36,6 +38,7 @@ from .jsstr import JS_WS_CLASS, canonical, code_points, js_lower, js_trim
 __all__ = [
     "BAD_WORDS",
     "CHAT_MAX",
+    "LONE_SURROGATE",
     "OpError",
     "SIGN_MAX",
     "clean_chat",
@@ -49,6 +52,8 @@ __all__ = [
 CHAT_MAX = 40
 
 INVISIBLE = regex.compile(r"[\p{Cc}\p{Cf}]")
+#: 짝 없는 서로게이트 (canonical으로 짝을 맞춘 뒤에도 남은 것)
+LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 _WS_RUN = re.compile("[" + JS_WS_CLASS + "]+")
 LINK = re.compile(
     r"(https?:|www\.|[a-z0-9-]+\.(com|net|org|kr|io|co|me|ly|gg|xyz|app|dev|shop|site|link|to|be|ai|so|kakao)\b|t\.me|open\.kakao|닷컴|닷넷)",
@@ -83,8 +88,8 @@ def js_normalize_nfc(s: str) -> str:
 
 
 def _squash(raw: str) -> str:
-    """``raw.normalize('NFC').replace(INVISIBLE, '').replace(/\\s+/g, ' ').trim()``"""
-    text = INVISIBLE.sub("", js_normalize_nfc(raw))
+    """``raw.normalize('NFC').replace(INVISIBLE, '').replace(/\\s+/g, ' ').trim()`` (+ NFC 전에 짝 없는 서로게이트를 지움)"""
+    text = INVISIBLE.sub("", js_normalize_nfc(LONE_SURROGATE.sub("", canonical(raw))))
     return js_trim(_WS_RUN.sub(" ", text))
 
 

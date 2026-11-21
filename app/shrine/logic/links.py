@@ -286,11 +286,20 @@ def public_shrine(s: Mapping[str, Any], now: int | None = None) -> dict[str, Any
 # ── registry.ts ──────────────────────────────────────────────────────
 
 
+#: 이메일에 받지 않는 글자: 제어 문자(Cc, NUL 포함) · 짝 없는 서로게이트(Cs)
+_EMAIL_BAD = re.compile("[\x00-\x1f\x7f-\x9f\ud800-\udfff]")
+
+
 def clean_email(raw: Any) -> str | None:
-    """registry.ts:144-148 ``cleanEmail``: trim · 소문자 뒤 ``is_valid_email``."""
+    """registry.ts:144-148 ``cleanEmail``: trim · 소문자 뒤 ``is_valid_email``.
+
+    보안 점검 (Node와 일부러 다름): ``EMAIL_RE``는 지역 부분에 제어 문자 · 짝 없는 서로게이트도 받아서
+    DB 오류(500)가 났습니다. 그런 글자가 있으면 None (``is_valid_email``은 Node와 같게 둠)."""
     if not isinstance(raw, str):
         return None
     e = js_lower(js_trim(raw))
+    if _EMAIL_BAD.search(canonical(e)):
+        return None
     return e if is_valid_email(e) else None
 
 

@@ -9,6 +9,8 @@ Node와 다른 점 (일부러):
   · GITHUB_CHECK: Node는 검사는 대소문자 무시(on/off), 실제 사용(registry.ts)은 정확히 'off'만 봤습니다.
     여기서는 검사한 값(github_check)을 한곳에서 쓰므로 'OFF' · ' off '도 꺼짐입니다.
   · RETENTION_DAYS · PENDING_DAYS · BACKUP_*: Node는 다른 파일이 다시 읽었지만 여기서는 검사한 값을 그대로 둡니다.
+  · 보안 점검: WS_MAX_PER_IP 기본값은 4입니다 (Node 12). 실시간 정원 60명을 IP 몇 개로 채우지 못하게.
+  · 보안 점검: 운영에서 운영자 화면이 켜졌는데 ADMIN_IPS가 비어 있으면 경고합니다 (시작은 함).
 """
 
 from __future__ import annotations
@@ -293,6 +295,12 @@ def load_config(env: Mapping[str, str] | None = None) -> ConfigResult:
                 admin_password = ""
                 break
             admin_ips.append(ip)
+    if is_prod and admin_password and not admin_ips:
+        # 보안 점검: 막지는 않고 경고만 (Node에는 없는 경고)
+        warnings.append(
+            "ADMIN_IPS가 비어 있습니다. 누구나 운영자 로그인을 시도할 수 있고, 서버 전체 로그인 잠금(15분 50번)에 운영자도 "
+            "같이 막힐 수 있습니다. ADMIN_IPS나 Caddyfile의 @adminOutside로 들어올 IP를 정해 두길 권합니다"
+        )
 
     # ── 운영자 알림 ──
     notify_url = get("NOTIFY_WEBHOOK_URL")
@@ -329,7 +337,8 @@ def load_config(env: Mapping[str, str] | None = None) -> ConfigResult:
     free_chat = on_off("FREE_CHAT", True)
     board_open = on_off("BOARD_OPEN", False)
     candle_cooldown_ms = integer("CANDLE_COOLDOWN_MS", 30 * 60_000)
-    ws_max_per_ip = integer("WS_MAX_PER_IP", 12, 1, 1000)
+    # 보안 점검: 기본 4 (Node 12). IPv6는 /64를 한 IP로 셉니다 (realtime)
+    ws_max_per_ip = integer("WS_MAX_PER_IP", 4, 1, 1000)
 
     # ── 새 서버에만 있는 값 ──
     database_url = _database_url(get("DATABASE_URL"), is_prod, errors, prod_errors)

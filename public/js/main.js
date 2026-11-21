@@ -2393,10 +2393,10 @@ const REG_FAIL = {
   dup: '이미 접수된 저장소나 주소예요.',
   many: '오늘은 더 접수할 수 없어요. 내일 다시 해 주세요.',
   slow: '2분 뒤에 다시 접수해 주세요.',
-  locked: '비밀번호를 여러 번 틀려서 잠겼어요. 15분 뒤 다시 해 주세요.',
+  locked: '비밀번호를 여러 번 틀려서 잠겼어요. 잠시 뒤(오늘 너무 많이 틀렸다면 내일) 다시 해 주세요.',
   none: '등록 번호를 찾지 못했어요.',
   ticket: '입장 표가 만료됐어요. 다시 입장해 주세요.',
-  image: '이미지를 올리지 못했어요. PNG · JPG · WebP, 10MB까지예요.',
+  image: '이미지를 올리지 못했어요. PNG · JPG · WebP, 5MB까지예요.',
   plot: '그 채널의 그 자리에는 이미 사당이 있어요. 다른 자리나 채널을 골라 주세요.',
   channel: '채널을 다시 골라 주세요.',
   consent: '개인정보 수집 · 이용에 동의해야 접수할 수 있어요.',
@@ -2406,11 +2406,12 @@ const REG_FAIL = {
 }
 /** 이미지 올리기 실패 까닭 */
 const IMG_FAIL = {
-  size: '10MB 이하 이미지만 올릴 수 있어요.', type: 'PNG · JPG · WebP 이미지만 올릴 수 있어요.',
+  size: '5MB 이하 이미지만 올릴 수 있어요.', type: 'PNG · JPG · WebP 이미지만 올릴 수 있어요.',
   slow: '이미지는 1시간에 10장까지 올릴 수 있어요.', many: '오늘은 이미지를 더 올릴 수 없어요.',
   full: '지금은 이미지를 받을 수 없어요. 나중에 다시 해 주세요.', bad: '이미지 파일을 읽지 못했어요.',
+  timeout: '이미지를 올리는 데 너무 오래 걸렸어요. 연결을 확인하고 다시 해 주세요.',
 }
-const IMG_MAX = 10 * 1024 * 1024
+const IMG_MAX = 5 * 1024 * 1024
 /** 서버가 돌려준 까닭 → 오류를 띄울 칸 */
 const REG_FIELD = { plot: 'plot', channel: 'plot', image: 'image', name: 'name', tagline: 'tagline', sign: 'sign', category: 'category', link: 'github', github: 'github', url: 'url', email: 'email', pin: 'pin', dup: 'github', consent: 'consent' }
 const STATUS_LABEL = { pending: '검토 중', approved: '맵에 올라감', rejected: '반려', withdrawn: '내림' }
@@ -2677,7 +2678,7 @@ function imageField(form, p = {}) {
   const tools = el('div', 'rf-image-tools')
   tools.append(pick, clear)
   row.append(preview, tools, input)
-  const help = p.pendingScreen ? '새 이미지는 운영자가 확인한 뒤 사당에 떠요' : '사당 모니터에 떠요. 사이트 화면이나 대표 이미지 (10MB까지)'
+  const help = p.pendingScreen ? '새 이미지는 운영자가 확인한 뒤 사당에 떠요' : '사당 모니터에 떠요. 사이트 화면이나 대표 이미지 (5MB까지)'
   return regField('image', '이미지', row, { full: true, optional: true, help })
 }
 
@@ -2695,7 +2696,7 @@ async function uploadImage(file) {
     const as = (type, q) => new Promise(r => cv.toBlob(b => r(b), type, q))
     blob = (await as('image/webp', 0.86)) ?? blob
     if (blob.type !== 'image/webp') blob = (await as('image/jpeg', 0.86)) ?? file
-  } catch { /* 줄이지 못하면 원본 그대로 (서버가 10MB · 형식을 다시 확인) */ }
+  } catch { /* 줄이지 못하면 원본 그대로 (서버가 5MB · 형식을 다시 확인) */ }
   if (blob.size > IMG_MAX) return { ok: false, reason: 'size' }
   try {
     const res = await fetch(`${BASE}/api/upload`, { method: 'POST', headers: { 'Content-Type': blob.type || 'application/octet-stream' }, body: blob })

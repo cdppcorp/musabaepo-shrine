@@ -6,7 +6,7 @@ import { bakeFloor } from '../js/pixels.js'
 const BASE = document.querySelector('meta[name="shrine-base"]')?.content ?? ''
 const API = `${BASE}/api/admin`
 const main = document.getElementById('main')
-const IMG_MAX = 10 * 1024 * 1024
+const IMG_MAX = 5 * 1024 * 1024
 const UPLOAD_RE = /^[A-Za-z0-9_-]{16}\.(?:png|jpg|webp)$/
 
 const STATUS = { pending: '검토 대기', approved: '승인', rejected: '반려', withdrawn: '내림' }
@@ -26,7 +26,7 @@ const ACTIONS = {
 }
 const REASONS = {
   bad: '입력 형식이 올바르지 않습니다', origin: '이 화면에서 보낸 요청만 받습니다', session: '로그인이 끝났습니다',
-  none: '찾을 수 없습니다', type: 'PNG · JPEG · WebP 이미지만 올릴 수 있습니다', size: '이미지는 10MB까지입니다',
+  none: '찾을 수 없습니다', type: 'PNG · JPEG · WebP 이미지만 올릴 수 있습니다', size: '이미지는 5MB까지입니다',
   slow: '이미지를 너무 자주 올렸습니다. 잠시 뒤에 해 주세요', many: '오늘 올릴 수 있는 이미지 수를 넘었습니다',
   full: '이미지 저장 공간이 꽉 찼습니다', net: '서버에 닿지 않습니다',
   gone: '그 사람은 이미 나갔습니다. 신고 목록에 있으면 거기서 차단할 수 있습니다',

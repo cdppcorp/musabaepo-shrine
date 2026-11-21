@@ -1,18 +1,24 @@
 """등록소 이미지 (server/uploads.ts).
 
-  · 10MB까지, PNG · JPEG · WebP만 (파일 앞부분으로 형식 · 가로 · 세로를 읽음, 16~8000px)
-  · 위치 정보(EXIF) · XMP · 글 메타데이터를 바이트 구조만 보고 지운 뒤 저장 (디코드 · 다시 인코딩 없음, Node와 같은 바이트)
-  · DATA_DIR/uploads/<무작위 16자>.<png|jpg|webp>, 접수 · 사당 어디에도 안 쓰인 지 하루 지난 파일은 6시간마다 지움
+  · 5MB까지, PNG · JPEG · WebP만 (파일 앞부분으로 형식 · 가로 · 세로를 읽음, 16~8000px)
+  · 위치 정보(EXIF) · XMP · 글 메타데이터를 바이트 구조만 보고 지운 뒤 저장 (디코드 · 다시 인코딩 없음.
+    PNG · WebP는 Node와 같은 바이트, JPEG는 SOS 뒤도 읽어 더 지움: _strip_jpeg)
+  · DATA_DIR/uploads/<무작위 16자>.<png|jpg|webp>. 올린 뒤 1시간 안에 접수 · 수정에 붙여야 하고, 접수 · 사당 어디에도
+    안 쓰인 채 1시간(+5분 여유)이 지난 파일은 15분마다 지움 (붙은 것 · 검토 대기인 것은 남김)
   · 누구나 받는 것은 맵에 떠 있는 사당의 이미지뿐. 검토 대기 이미지는 올린 사람(24시간) · 관리 비밀번호로 연 사람(3시간)
     · 운영자에게만 캐시하지 말라는 표시를 붙여 보냄
 
 Node가 프로세스 메모리에 두던 것 → Redis (모두 만료가 붙음, IP는 그날 해시로만):
   shrine:up:sid:<sid>               ZSET  올린 시각(ms) — 1시간 10장 (PX 1h)
   shrine:up:ip:<KST날짜>:<IP해시>    STR   그날 올린 수 — 하루 30장 (PX 26h)
+  shrine:up:ipbytes:<KST날짜>:<IP해시> STR  그날 저장한 바이트 — 하루 100MB (PX 26h)
   shrine:up:owner:<파일>             STR   {"sid","at"} 누가 올렸는지 (PX 24h): 접수에 붙이기 · 올린 사람 미리 보기
   shrine:up:grant:<sid>             SET   관리 비밀번호로 연 접수의 검토 대기 이미지 (PX 3h, 새로 허락하면 다시 3h)
   shrine:rl:upload-try:<IP해시>       STR   시도 횟수 — 10분 20번, 형식이 틀린 것도 셈 (FixedWindowLimiter)
 동시 업로드 수 · 폴더 합계 · 80% 알림 표시는 이 프로세스의 UploadStore(storage.py)에.
+
+보안 점검으로 Node와 일부러 다르게 둔 곳: 최대 10MB → 5MB, IP(/64)당 하루 100MB, 안 쓰인 파일 24시간 → 1시간,
+JPEG 메타데이터 지우기(스캔 사이 APPn · COM, EOI 뒤 꼬리). 저장 공간(2GB)을 하루 만에 채우지 못하게.
 """
 
 from __future__ import annotations
@@ -34,17 +40,23 @@ from .logic.jsnum import JSONParseError, json_parse, json_stringify
 from .logic.util import kst_date, now_ms
 from .redis import FixedWindowLimiter, key
 from .shrines import all_shrines
-from .storage import MIN_FREE, ORPHAN_MS, TOTAL_MAX
+from .storage import MIN_FREE, TOTAL_MAX
 
 log = logging.getLogger("shrine.uploads")
 
-UPLOAD_MAX = 10 * 1024 * 1024
+UPLOAD_MAX = 5 * 1024 * 1024
 #: 저장 이름: 무작위 16자 + 확장자
 UPLOAD_NAME_RE = re.compile(r"[A-Za-z0-9_-]{16}\.(?:png|jpg|webp)")
 TYPES = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
 PER_SID_HOUR = 10
 PER_IP_DAY = 30
+#: IP(/64)당 하루 저장 바이트 (메타데이터를 뺀 크기로 셈)
+PER_IP_DAY_BYTES = 100 * 1024 * 1024
 HOUR_MS = 3600_000
+#: 올린 뒤 이 안에 접수 · 수정에 붙여야 합니다 (안 붙인 파일은 storage.ORPHAN_MS 뒤 지워짐)
+ATTACH_MS = HOUR_MS
+#: 누가 올렸는지 기록(owner)의 수명 · 올린 사람 미리 보기 (붙인 뒤 검토 대기 이미지를 올린 사람이 보는 시간)
+OWNER_MS = 24 * HOUR_MS
 GRANT_MS = 3 * 3600_000
 DAY_KEY_TTL_MS = 26 * 3600_000
 TRY_LIMIT = 20
@@ -148,12 +160,38 @@ def _strip_png(b: bytes) -> bytes | None:
     return None
 
 
+def _skip_scan(b: bytes, i: int) -> int | None:
+    """SOS 뒤 압축 데이터의 끝 (다음 표지의 0xFF 자리). 0xFF 00(채움) · 0xFF D0~D7(RST)은 데이터로 봅니다.
+    표지 앞의 0xFF 여러 개(채움)는 마지막 하나 자리를 돌려줍니다. 표지 없이 끝나면 None."""
+    n = len(b)
+    while True:
+        k = b.find(b"\xff", i)
+        if k < 0:
+            return None
+        m = k + 1
+        while m < n and b[m] == 0xFF:
+            m += 1
+        if m >= n:
+            return None
+        code = b[m]
+        if code == 0x00 or 0xD0 <= code <= 0xD7:
+            i = m + 1
+            continue
+        return m - 1
+
+
 def _strip_jpeg(b: bytes) -> bytes | None:
-    """APP0(JFIF) · APP2(ICC) · APP14(Adobe)만 두고 다른 APPn(APP1 EXIF · XMP 포함) · 주석(COM)을 뺍니다. SOS부터는 그대로."""
+    """APP0(JFIF) · APP2(ICC) · APP14(Adobe)만 두고 다른 APPn(APP1 EXIF · XMP 포함) · 주석(COM)을 뺍니다.
+
+    보안 점검 (Node와 일부러 다름): Node는 첫 SOS부터 끝까지 그대로 두어, 스캔 사이의 APPn · COM과 EOI 뒤에 붙은 것
+    (MPF 두 번째 이미지 · 모션 포토 MP4 · 삼성 SEFT 꼬리 등)이 남았습니다. 여기서는 압축 데이터 뒤에도 표지를 계속 읽어
+    첫 SOS 뒤의 APPn · COM은 모두 빼고, EOI에서 멈춰 그 뒤를 버립니다. EOI 없이 끝나거나 SOS 뒤 구조가 깨졌으면 None.
+    """
     if len(b) < 2 or b[0] != 0xFF or b[1] != 0xD8:
         return None
     out = [b[0:2]]
     i = 2
+    scanned = False
     while i + 1 < len(b):
         if b[i] != 0xFF:
             return None
@@ -161,8 +199,8 @@ def _strip_jpeg(b: bytes) -> bytes | None:
         if marker == 0xFF:
             i += 1
             continue
-        if marker in (0xDA, 0xD9):
-            out.append(b[i:])
+        if marker == 0xD9:
+            out.append(b"\xff\xd9")
             return b"".join(out)
         if marker == 0x01 or 0xD0 <= marker <= 0xD7:
             out.append(b[i : i + 2])
@@ -175,10 +213,20 @@ def _strip_jpeg(b: bytes) -> bytes | None:
         if length < 2 or end > len(b):
             return None
         app = 0xE0 <= marker <= 0xEF
-        drop = (app and marker not in (0xE0, 0xE2, 0xEE)) or marker == 0xFE
+        if scanned:
+            drop = app or marker == 0xFE
+        else:
+            drop = (app and marker not in (0xE0, 0xE2, 0xEE)) or marker == 0xFE
         if not drop:
             out.append(b[i:end])
         i = end
+        if marker == 0xDA:
+            scanned = True
+            stop = _skip_scan(b, i)
+            if stop is None:
+                return None
+            out.append(b[i:stop])
+            i = stop
     return None
 
 
@@ -266,16 +314,24 @@ def _grant_key(sid: str) -> str:
     return key("up", "grant", sid)
 
 
+def _ip_bytes_key(day: str, ip_key: str) -> str:
+    return key("up", "ipbytes", day, ip_key or "-")
+
+
 # 할당량 확인 + 기록을 한 번에 (동시 업로드 3개가 같이 와도 한도를 넘지 않게)
 _RESERVE_LUA = """
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', tonumber(ARGV[1]) - tonumber(ARGV[5]))
 if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[3]) then return 'slow' end
 local n = tonumber(redis.call('GET', KEYS[2]) or '0')
 if n >= tonumber(ARGV[4]) then return 'many' end
+local used = tonumber(redis.call('GET', KEYS[3]) or '0')
+if used + tonumber(ARGV[7]) > tonumber(ARGV[8]) then return 'many' end
 redis.call('ZADD', KEYS[1], ARGV[1], ARGV[2])
 redis.call('PEXPIRE', KEYS[1], ARGV[5])
 redis.call('INCR', KEYS[2])
 redis.call('PEXPIRE', KEYS[2], ARGV[6])
+redis.call('INCRBY', KEYS[3], ARGV[7])
+redis.call('PEXPIRE', KEYS[3], ARGV[6])
 return 'ok'
 """
 
@@ -283,6 +339,8 @@ _RELEASE_LUA = """
 redis.call('ZREM', KEYS[1], ARGV[1])
 local n = tonumber(redis.call('GET', KEYS[2]) or '0')
 if n > 0 then redis.call('DECR', KEYS[2]) end
+local used = tonumber(redis.call('GET', KEYS[3]) or '0')
+if used > 0 then redis.call('DECRBY', KEYS[3], math.min(used, tonumber(ARGV[2]))) end
 return 1
 """
 
@@ -319,8 +377,12 @@ async def _quota_fail(ctx, sid: str, ip_key: str, now: int) -> str | None:
     recent = await r.zcount(_sid_key(sid), f"({now - HOUR_MS}", "+inf")
     if recent >= PER_SID_HOUR:
         return "slow"
-    n = await r.get(_ip_key(kst_date(now), ip_key))
+    day = kst_date(now)
+    n = await r.get(_ip_key(day, ip_key))
     if n is not None and int(n) >= PER_IP_DAY:
+        return "many"
+    used = await r.get(_ip_bytes_key(day, ip_key))
+    if used is not None and int(used) >= PER_IP_DAY_BYTES:
         return "many"
     return None
 
@@ -417,9 +479,13 @@ async def save_upload(ctx, buf: bytes | None, sid: str, ip_key: str, *, quotas: 
         return {"ok": False, "reason": "full"}
     name = new_upload_name(ext)
     member = f"{now}:{name}"
-    sid_key, ip_day_key = _sid_key(sid), _ip_key(kst_date(now), ip_key)
+    day = kst_date(now)
+    sid_key, ip_day_key, ip_bytes_key = _sid_key(sid), _ip_key(day, ip_key), _ip_bytes_key(day, ip_key)
     if quotas:
-        got = await st.reserve(keys=[sid_key, ip_day_key], args=[now, member, PER_SID_HOUR, PER_IP_DAY, HOUR_MS, DAY_KEY_TTL_MS])
+        got = await st.reserve(
+            keys=[sid_key, ip_day_key, ip_bytes_key],
+            args=[now, member, PER_SID_HOUR, PER_IP_DAY, HOUR_MS, DAY_KEY_TTL_MS, len(clean), PER_IP_DAY_BYTES],
+        )
         got = got.decode() if isinstance(got, bytes) else str(got)
         if got != "ok":
             return {"ok": False, "reason": got}
@@ -427,11 +493,11 @@ async def save_upload(ctx, buf: bytes | None, sid: str, ip_key: str, *, quotas: 
         await asyncio.to_thread(store.write_new, name, clean)
     except BaseException:
         if quotas:
-            await st.release(keys=[sid_key, ip_day_key], args=[member])
+            await st.release(keys=[sid_key, ip_day_key, ip_bytes_key], args=[member, len(clean)])
         raise
     check_capacity(ctx)
     if r is not None:
-        await r.set(_owner_key(name), json_stringify({"sid": sid, "at": now}), px=ORPHAN_MS)
+        await r.set(_owner_key(name), json_stringify({"sid": sid, "at": now}), px=OWNER_MS)
     return {"ok": True, "id": name}
 
 
@@ -447,11 +513,11 @@ async def _owner(ctx, name: str) -> dict[str, Any] | None:
 
 
 async def owns_upload(ctx, name: Any, sid: str) -> bool:
-    """이 사람이 하루 안에 올린 파일인가 (접수 · 수정에 붙일 수 있는지)."""
+    """이 사람이 1시간 안에 올린 파일인가 (접수 · 수정에 붙일 수 있는지). 안 붙인 파일은 그 뒤 지워집니다."""
     if not is_upload_name(name):
         return False
     o = await _owner(ctx, name)
-    return o is not None and o.get("sid") == sid and now_ms() - int(o.get("at") or 0) < ORPHAN_MS
+    return o is not None and o.get("sid") == sid and now_ms() - int(o.get("at") or 0) < ATTACH_MS
 
 
 async def grant_upload_view(ctx, sid: str, names: Iterable[Any]) -> None:
@@ -481,7 +547,7 @@ async def can_see_private(ctx, request, name: str, sid: str | None) -> bool:
     now = now_ms()
     if sid:
         o = await _owner(ctx, name)
-        if o is not None and o.get("sid") == sid and now - int(o.get("at") or 0) < ORPHAN_MS:
+        if o is not None and o.get("sid") == sid and now - int(o.get("at") or 0) < OWNER_MS:
             return True
         if await ctx.redis.sismember(_grant_key(sid), name):
             return True
@@ -545,8 +611,37 @@ async def remove_uploads(ctx, names: Iterable[Any]) -> int:
     return n
 
 
+def _is_operator(sid: Any) -> bool:
+    """운영 명령(cli) · 운영자 화면(admin:<세션>)이 올린 것."""
+    return isinstance(sid, str) and (sid == "cli" or sid.startswith("admin:"))
+
+
+async def _operator_uploads(ctx, used: set[str]) -> set[str]:
+    """운영자가 올린 지 24시간이 안 된 파일 (사당 JSON에 손으로 붙일 시간을 줍니다. 방문자 업로드만 1시간)."""
+    if ctx.redis is None:
+        return set()
+    import os
+
+    names = [n for n in await asyncio.to_thread(os.listdir, ctx.uploads.dir) if n not in used and is_upload_name(n)]
+    keep: set[str] = set()
+    now = now_ms()
+    for i in range(0, len(names), 500):
+        part = names[i : i + 500]
+        for name, raw in zip(part, await ctx.redis.mget([_owner_key(n) for n in part]), strict=True):
+            if raw is None:
+                continue
+            try:
+                o = json_parse(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+            except (JSONParseError, UnicodeDecodeError):
+                continue
+            if isinstance(o, dict) and _is_operator(o.get("sid")) and now - int(o.get("at") or 0) < OWNER_MS:
+                keep.add(name)
+    return keep
+
+
 async def cleanup_uploads(ctx) -> int:
-    """접수 · 사당 어디에도 안 쓰인 지 하루 넘은 파일 지우기 (시작할 때 + 6시간마다). 지운 개수.
+    """접수 · 사당 어디에도 안 쓰인 지 1시간(+5분) 넘은 파일 지우기 (시작할 때 + 15분 · 6시간마다). 지운 개수.
+    운영자(운영 명령 · 운영자 화면)가 올린 것은 24시간까지 남깁니다 (_operator_uploads).
     반려 · 내린 접수의 이미지는 파기(30일) 때까지 남깁니다 (projects.screen에 남아 있으므로)."""
     async with ctx.db.session() as s:
         used = await shrine_images(s)
@@ -555,6 +650,7 @@ async def cleanup_uploads(ctx) -> int:
                 used.add(screen)
             if pending:
                 used.add(pending)
+    used |= await _operator_uploads(ctx, used)
     n = await asyncio.to_thread(ctx.uploads.remove_orphans, used, now_ms())
     check_capacity(ctx)
     # 할당량 · 소유 · 보기 허락은 Redis 만료로 저절로 정리됩니다
@@ -564,6 +660,7 @@ async def cleanup_uploads(ctx) -> int:
 __all__ = [
     "MIN_FREE",
     "PER_IP_DAY",
+    "PER_IP_DAY_BYTES",
     "PER_SID_HOUR",
     "TYPES",
     "UPLOAD_MAX",

@@ -20,6 +20,7 @@ from shrine.logic.chat import (
     _SPACE_PUNCT_SYMBOL,
     CHAT_MAX,
     INVISIBLE,
+    LONE_SURROGATE,
     OpError,
     clean_chat,
     clean_op_text,
@@ -27,12 +28,19 @@ from shrine.logic.chat import (
     clean_text,
     js_normalize_nfc,
 )
-from shrine.logic.jsstr import js_lower
+from shrine.logic.jsstr import canonical, js_lower
 
 CORPUS = json.loads((Path(__file__).parent / "data" / "chat_corpus.json").read_text(encoding="ascii"))
 
 
+def _node_comparable(v) -> bool:  # noqa: ANN001
+    """보안 점검: 짝 없는 서로게이트는 일부러 Node와 다르게 지웁니다 (logic/chat.py LONE_SURROGATE).
+    Node와 맞춰 볼 때는 빼고 test_sec_http.py에서 따로 봅니다."""
+    return not (isinstance(v, str) and LONE_SURROGATE.search(canonical(v)))
+
+
 def check(inputs: list[list]) -> None:
+    inputs = [x for x in inputs if _node_comparable(x[0])]
     node = run("chat", inputs=inputs)
     assert node["max"] == CHAT_MAX
     bad = []
@@ -122,6 +130,7 @@ def test_registry_text_and_sign_match_node() -> None:
     for v, _mx in CORPUS[:200]:
         inputs.append([v, rng.choice([8, 20, 40]), rng.choice(["name", "tagline", "sign"]), rng.choice(["한 줄 소개입니다 길어요", " 짧음 ", "😀😀😀😀😀😀😀😀😀😀", "a b c d e f g h i"])])
     inputs += [[None, 8, "sign", "가나다라마바사아자차"], ["   ", 8, "sign", "  앞뒤 공백 있는 소개  "], ["", 8, "sign", "e\u0301" * 10]]
+    inputs = [x for x in inputs if _node_comparable(x[0])]  # 보안 점검: 서로게이트 (위 _node_comparable)
     node = run("regText", inputs=inputs)
     for (raw, mx, field, tagline), want in zip(inputs, node, strict=True):
         assert clean_text(raw, mx, field) == want["text"], (raw, mx, field)
@@ -131,6 +140,7 @@ def test_registry_text_and_sign_match_node() -> None:
 def test_op_text_matches_node() -> None:
     inputs = [[v, mx, "사유", opt] for v, _ in CORPUS[::3] for mx, opt in ((80, True), (8, False))]
     inputs += [[None, 5, "이름", False], [None, 5, "이름", True], [5, 5, "x", True], ["  ", 3, "메모", True], ["abcd", 3.5, "메모", True]]
+    inputs = [x for x in inputs if _node_comparable(x[0])]  # 보안 점검: 서로게이트 (위 _node_comparable)
     node = run("opText", inputs=inputs)
     for (raw, mx, label, opt), want in zip(inputs, node, strict=True):
         try:

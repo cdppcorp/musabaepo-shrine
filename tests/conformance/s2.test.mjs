@@ -274,10 +274,12 @@ try {
   ok('예전 4자리 PIN으로도 관리 열림', r.data?.ok === true, JSON.stringify(r.data))
   r = await post('/api/manage/save', { id: legacyId, pin: '4321', newPin: '987' }, { ck: L.ck, ip: '10.1.0.6' })
   ok('새 PIN은 4자리 이상만', r.data?.reason === 'pin')
-  await D.sql(DATA, 'INSERT INTO pin_locks (project_id, day, fails, until) VALUES (?, ?, 19, 0)', [legacyId, kstDay()])
+  // 보안 점검: py는 접수 전체 하루 한도가 200번 ((접수, IP)마다 20번은 Redis에서 그날 그 IP만 잠금). Node는 20번 그대로
+  const dayFails = D.isPy ? 199 : 19
+  await D.sql(DATA, 'INSERT INTO pin_locks (project_id, day, fails, until) VALUES (?, ?, ?, 0)', [legacyId, kstDay(), dayFails])
   hooks.length = 0
   r = await post('/api/manage/get', { id: legacyId, pin: '0000' }, { ck: L.ck, ip: '10.1.0.7' })
-  ok('그날 20번째로 틀리면 locked', r.data?.reason === 'locked', JSON.stringify(r.data))
+  ok(`그날 ${dayFails + 1}번째로 틀리면 locked`, r.data?.reason === 'locked', JSON.stringify(r.data))
   t = await waitHook(x => x.includes('관리 비밀번호 잠금'))
   ok('알림: PIN 잠금 (번호만)', !!t && t.includes(`접수: ${legacyId}`) && !t.includes('legacy@'), t)
   await stop(srv); srv = await start()

@@ -156,6 +156,9 @@ def node_output(env: dict[str, str]) -> tuple[str, dict | None]:
 def test_matches_node(name: str, env: dict[str, str]):
     node_err, node_values = node_output(env)
     py_err, py_values = python_output(env)
+    # 보안 점검: WS_MAX_PER_IP 기본값을 Python만 12 → 4로 낮췄습니다 (값을 넣은 경우는 Node와 같음)
+    if node_values is not None and not env.get("WS_MAX_PER_IP", "").strip():
+        node_values["wsMaxPerIp"] = 4
     assert py_err == node_err
     assert py_values == node_values
 
@@ -169,7 +172,7 @@ def test_dev_defaults():
     c = r.config
     assert (c.port, c.host, c.base_path, c.data_dir) == (3300, "127.0.0.1", "", "./data")
     assert c.free_chat and not c.board_open and not c.allow_indexing and not c.trust_proxy
-    assert c.candle_cooldown_ms == 1_800_000 and c.ws_max_per_ip == 12
+    assert c.candle_cooldown_ms == 1_800_000 and c.ws_max_per_ip == 4  # 보안 점검: 12 → 4
     assert c.github_check and c.retention_days == 30 and c.pending_days == 90
     assert c.backup_dir == "./backups" and c.backup_keep == 14 and c.backup_max_days == 14
     assert len(c.ticket_secret) == 64  # 개발: 시작할 때마다 무작위

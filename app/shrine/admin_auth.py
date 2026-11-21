@@ -7,6 +7,9 @@
   · 로그아웃한 세션: Node는 메모리 Map이었고, 여기서는 Redis에 만료(세션이 끝나는 시각)를 붙여 둡니다 (다시 띄워도 남음).
   · 로그인 실패: IP(그날 해시)당 15분에 5번, 서버 전체 15분에 50번에서 잠급니다. Node와 같이 프로세스 메모리에 둡니다
     (다시 띄우면 비움). 창 규칙도 같습니다: IP 창은 첫 실패부터 15분, 전체 창은 창이 끝난 뒤 처음 로그인을 시도한 때부터 15분.
+    보안 점검: ADMIN_IPS가 있으면 서버 전체 잠금은 쓰지 않습니다 (그때 로그인까지 오는 요청은 ADMIN_IPS뿐이라, 남이 전체
+    잠금을 걸어 운영자를 내쫓을 수 없게). IP별 잠금은 그대로입니다. ADMIN_IPS가 비면 config.py가 운영에서 경고합니다.
+    Redis를 쓰지 않으므로 Redis가 멈추거나 가득 차도 잠금이 풀리지 않습니다.
   · Redis가 답하지 않으면 세션은 없는 것으로 봅니다 (로그아웃한 세션을 다시 받지 않게) — 경고 로그를 1분에 한 번.
 
 Redis 키 (만료가 붙음):
@@ -184,7 +187,8 @@ async def login_locked(ctx, ip_key: str, now: int | None = None) -> bool:
     all_fails = ctx._p4_login_fails[1]
     if n - all_fails.start >= FAIL_WINDOW_MS:
         all_fails.start, all_fails.n = n, 0
-    if all_fails.n >= FAILS_TOTAL:
+    # ADMIN_IPS가 있으면 ADMIN_IPS 밖은 여기까지 오지 못합니다 (web/admin.py가 404). 그때는 IP별 잠금만
+    if all_fails.n >= FAILS_TOTAL and not setup(ctx).ips:
         return True
     f = ip_fails.get(ip_key)
     return f is not None and n - f.start < FAIL_WINDOW_MS and f.n >= FAILS_PER_IP

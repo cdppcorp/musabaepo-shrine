@@ -9,6 +9,9 @@
       - 만든 지 BACKUP_MAX_DAYS - 1일(기본 13일)이 지난 것. 매일 돌리면 어떤 백업도 BACKUP_MAX_DAYS일(기본 14일)을
         넘겨 남지 않습니다. 개인정보 처리방침에 적은 보관 기간이므로 늘리려면 처리방침도 같이 고칩니다.
   · 백업에는 이메일 같은 개인정보가 들어 있어서 파일은 만든 사용자만 읽을 수 있게(600) 만듭니다.
+  · (선택, 보안 점검) BACKUP_SIGNING_KEY가 있으면 manifest.json의 HMAC-SHA256을 manifest.sig로 같이 넣고, verify ·
+    restore는 그 키로 서명을 확인합니다 (없거나 틀리면 멈춤). manifest의 SHA-256은 백업 안에서만 맞춰 보는 값이라,
+    앱이 뚫려 백업 폴더에 가짜 백업을 넣는 경우를 막으려면 이 키를 앱 .env가 아니라 운영자만 아는 곳에 둡니다.
 
     python -m shrine.backup [--env-file ../.env] [명령]
     create [--dump <파일>|-]           지금 백업 하나 (기본 명령). --dump: pg_dump -Fc 결과를 파일 · 표준 입력에서 받음
@@ -34,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import hmac
 import json
 import os
 import platform
@@ -58,6 +62,8 @@ from typing import IO, Any, BinaryIO
 DUMP_NAME = "db.dump"
 UPLOADS = "uploads"
 MANIFEST = "manifest.json"
+#: BACKUP_SIGNING_KEY가 있을 때만: "hmac-sha256:<16진>" (manifest.json 바이트 그대로의 HMAC)
+SIG_NAME = "manifest.sig"
 FORMAT = "musabaepo-shrine-backup"
 #: 1 = Node(SQLite) 서버의 백업, 2 = 이 도구 (PostgreSQL pg_dump)
 VERSION = 2
@@ -104,6 +110,20 @@ def settings() -> Settings:
         keep=_positive_int("BACKUP_KEEP", 14),
         max_days=_positive_int("BACKUP_MAX_DAYS", 14),
     )
+
+
+def signing_key() -> bytes | None:
+    """BACKUP_SIGNING_KEY (없으면 None). 짧으면 멈춥니다."""
+    raw = (os.environ.get("BACKUP_SIGNING_KEY") or "").strip()
+    if not raw:
+        return None
+    if len(raw) < 32:
+        raise BackupError("BACKUP_SIGNING_KEY는 32자 이상 무작위 값이어야 합니다 (예: openssl rand -hex 32)")
+    return raw.encode("utf-8")
+
+
+def sign_manifest(key: bytes, manifest_raw: bytes) -> str:
+    return "hmac-sha256:" + hmac.new(key, manifest_raw, hashlib.sha256).hexdigest()
 
 
 # ── 작은 도움 함수 ───────────────────────────────────────────────────
@@ -426,6 +446,8 @@ class TarWriter:
 @dataclass
 class Extracted:
     manifest: dict[str, Any] | None = None
+    manifest_raw: bytes | None = None
+    sig: str | None = None
     dump: Path | None = None
     uploads: int = 0
     upload_bytes: int = 0
@@ -475,6 +497,10 @@ def extract(file: Path, dest: Path, with_uploads: bool) -> Extracted:
                     except (UnicodeDecodeError, ValueError) as e:
                         raise BackupError("manifest.json을 읽을 수 없습니다") from e
                     out.manifest = v if isinstance(v, dict) else None
+                    out.manifest_raw = raw
+                    continue
+                if name == SIG_NAME and m.size <= 1024:
+                    out.sig = src.read().decode("utf-8", "replace").strip()
                     continue
                 if name == DUMP_NAME:
                     if out.dump is not None:
@@ -516,6 +542,15 @@ def extract(file: Path, dest: Path, with_uploads: bool) -> Extracted:
 
 def compare(x: Extracted, tables: dict[str, int]) -> list[str]:
     """백업 당시 기록(manifest)과 되살린 내용이 같은지. 다르면 이유 목록."""
+    key = signing_key()
+    if key is not None:
+        # 보안 점검: 키가 있으면 서명이 꼭 있어야 하고 맞아야 합니다 (manifest 없는 백업도 받지 않음)
+        if x.manifest_raw is None:
+            return ["manifest.json이 없어 서명(BACKUP_SIGNING_KEY)을 확인할 수 없습니다"]
+        if not x.sig:
+            return ["서명(manifest.sig)이 없습니다. BACKUP_SIGNING_KEY로 만든 백업이 아닙니다"]
+        if not hmac.compare_digest(x.sig, sign_manifest(key, x.manifest_raw)):
+            return ["서명(manifest.sig)이 맞지 않습니다. 백업이 바뀌었거나 다른 BACKUP_SIGNING_KEY로 만들었습니다"]
     m = x.manifest
     if not m:
         return []
@@ -759,6 +794,7 @@ def create_backup(s: Settings, dump_from: str | None = None, *, stdin: BinaryIO 
         raise BackupError("BACKUP_DIR을 이미지 폴더(uploads) 안에 둘 수 없습니다")
     if dump_from and dump_from != "-" and not Path(dump_from).is_file():
         raise BackupError(f"덤프 파일이 없습니다: {Path(dump_from).resolve()}")
+    key = signing_key()
     ensure_writable_dir(s.backup_dir)
     clean_stale(s.backup_dir)
     # 기한이 지난 백업은 이번 백업이 실패하더라도 먼저 지웁니다 (보관 기간 약속 · 디스크 여유)
@@ -835,7 +871,10 @@ def create_backup(s: Settings, dump_from: str | None = None, *, stdin: BinaryIO 
             "tables": info.tables, "uploads": uploads, "uploadBytes": packed, "python": platform.python_version(),
             "sha256": tar.hashes,
         }  # fmt: skip
-        tar.data(MANIFEST, (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode("utf-8"), at)
+        manifest_raw = (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        tar.data(MANIFEST, manifest_raw, at)
+        if key is not None:
+            tar.data(SIG_NAME, (sign_manifest(key, manifest_raw) + "\n").encode("ascii"), at)
         tar.finish()
         tar = None
         os.replace(partial, final)
@@ -1051,6 +1090,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise BackupError(USAGE)
             r = verify_backup(pos[0])
             print(f"[backup] 이상 없습니다: {Path(pos[0]).resolve()}")
+            if signing_key() is not None:
+                print("  서명: BACKUP_SIGNING_KEY로 확인함")
             print(f"  만든 때: {(r.manifest or {}).get('createdAt', '(manifest 없음)')}")
             print(f"  표: {table_line(r.tables)}")
             print(f"  이미지 {r.uploads}개 ({size(r.upload_bytes)})")

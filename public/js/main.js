@@ -88,7 +88,7 @@ const st = {
   keys: new Set(), path: [], arrive: false, cam: { x: 0, y: 0 }, last: 0,
   // 네비게이터: 켜면 보이는 것마다 옆에 설명 (lens는 화면 단추 자리를 잰 것). 이름 glasses는 저장 값과 맞추려고 그대로 둡니다
   glasses: false, lens: null, lensAt: 0,
-  // 화면 확대 단계 (마우스 휠 · +/- 키). 0이 기본, 한 단계마다 배율 k가 2씩 바뀝니다
+  // 화면 확대 단계 (확대/축소 단추 · +/- 키). 0이 기본, 한 단계마다 배율 k가 2씩 바뀝니다
   zoom: loadZoom(),
   sent: { x: 0, y: 0, d: 0, m: false, at: 0 },
   // lit: 사당 slug → 그 사당에 다시 초를 켤 수 있는 시각(ms)
@@ -1026,16 +1026,9 @@ function bindInput() {
   window.addEventListener('blur', () => st.keys.clear())
 
   const view = $('#view')
-  // 마우스 휠로 확대 · 축소 (한 번 굴릴 때 한 단계, 너무 빨리 넘어가지 않게 0.15초 간격)
-  let wheelAt = 0
-  view.addEventListener('wheel', e => {
-    if (e.ctrlKey) return
-    e.preventDefault()
-    const now = performance.now()
-    if (now - wheelAt < 150 || !e.deltaY) return
-    wheelAt = now
-    zoomBy(e.deltaY < 0 ? 1 : -1)
-  }, { passive: false })
+  // 마우스 휠 · 트랙패드 핀치(ctrl+휠)로는 확대 · 축소하지 않습니다 (맵 위에서 페이지 확대도 막음).
+  // 확대 · 축소는 화면의 확대/축소 단추와 +/- 키로만
+  view.addEventListener('wheel', e => { e.preventDefault() }, { passive: false })
   view.addEventListener('pointerdown', e => {
     // 화면 패드로 걷는 중에 다른 손가락이 맵에 닿아도 누른 곳으로 걷기는 하지 않습니다
     if (pad.id !== null) return
@@ -2087,7 +2080,7 @@ const HUD_NOTES = [
   { sel: '#hudChannel', side: 'below', title: '채널', text: '누르면 채널을 옮겨요. 함께 있는 사람 신고 · 말풍선 숨기기도 여기서' },
   { sel: '#pad', side: 'above', title: '화면 패드', text: '누른 채 밀면 그쪽으로 걸어요. 손을 떼면 멈춰요' },
   { sel: '#minimap', side: 'left', title: '미니맵', text: '누른 곳으로 걸어가요' },
-  { sel: '#zoomBar', side: 'left', title: '확대 · 축소 · 미니맵', text: '맵을 크게 · 작게 봐요 (휠 · +/- 키). 미니맵 단추로 미니맵을 켜고 꺼요', wide: true },
+  { sel: '#zoomBar', side: 'left', title: '확대 · 축소 · 미니맵', text: '맵을 크게 · 작게 봐요 (+/- 키도 돼요). 미니맵 단추로 미니맵을 켜고 꺼요', wide: true },
   { sel: '#zoomBar', side: 'left', title: '확대 · 축소 · 미니맵', text: '맵 크기를 바꾸고, 미니맵을 켜고 꺼요', narrow: true },
   { sel: '#pickBtn', side: 'above', title: '말 고르기', text: '정해진 인사 · 응원 말을 골라 보내요', wide: true },
   { sel: '#chatInput', side: 'above', title: '직접 말하기', text: '쓰고 Enter. 저장되지 않고 잠깐 떠 있다 사라져요', wide: true },
@@ -2146,7 +2139,7 @@ function glassesWorldNotes(cx, cy) {
     return best
   }
   const touch = window.matchMedia?.('(pointer: coarse)').matches
-  add(me.x, me.y - 14, 12, '나', touch ? '화면 패드를 밀거나 가고 싶은 곳을 누르면 걸어가요' : '방향키 · WASD로 걸어요. 맵을 눌러도 그곳으로 가요. 휠 · +/- 키로 확대 · 축소', '#ffffff', true)
+  add(me.x, me.y - 14, 12, '나', touch ? '화면 패드를 밀거나 가고 싶은 곳을 누르면 걸어가요' : '방향키 · WASD로 걸어요. 맵을 눌러도 그곳으로 가요. +/- 키로 확대 · 축소', '#ffffff', true)
 
   const live = closest(W.plots.filter(p => st.byPlot.has(p.id)).map(p => [p.x + 24, p.y + 16, st.byPlot.get(p.id)]))
   if (live) add(live[0], live[1], 22, `${live[2].name} 사당`, '누군가 만든 프로젝트예요. 앞에서 Space로 둘러보고 초를 켜 주세요 (같은 사당은 30분에 한 번)', '#f7c27a')

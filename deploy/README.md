@@ -3,9 +3,7 @@
 무사배포 기원소를 Docker로 한 서버에 띄우고 운영하는 절차입니다.
 첫 배포, 업데이트, 롤백, 백업과 복구, 서버 옮기기, 응급 조치를 다룹니다.
 
-> 서버는 Python(`app/`: FastAPI + PostgreSQL + Redis)입니다. 예전 Node 서버(SQLite)와 그 운영 안내는 git 기록의
-> 커밋 `a2b1bf6`까지에 있습니다 (`git show a2b1bf6:deploy/README.md`).
-> Node 운영본에서 처음 넘어올 때는 13장을 먼저 봅니다.
+> 서버는 Python(`app/`: FastAPI + PostgreSQL + Redis)입니다.
 
 - 명령은 모두 저장소의 `deploy/` 폴더에서, 아래 별칭을 건 셸에서 실행한다고 가정합니다.
   ```bash
@@ -298,7 +296,6 @@ rclone sync ./backups shrine-offsite:musabaepo-shrine --include 'shrine-*.tar'
 | 백업 폴더에 쓸 수 없습니다 | `sudo chown 1000:1000 backups` |
 | DB 덤프가 비어 있습니다 · db.dump가 중간에 끊겼습니다 | `$C ps`로 postgres가 healthy인지, `$C logs postgres`를 봅니다 (디스크가 차면 pg_dump도 실패) |
 | POSTGRES_PASSWORD를 넣고 --env-file ../.env로 실행하세요 | 스크립트의 `C=`에 `--env-file ../.env`가 있는지, `.env`에 값이 있는지 확인합니다 |
-| Node(SQLite) 서버가 만든 백업입니다 | 예전 Node 서버의 백업은 이 서버에 되살릴 수 없습니다 (13장) |
 
 ## 8. 복구
 
@@ -516,48 +513,3 @@ $C up -d
 **공개하는 날**
 
 `.env`에 `ALLOW_INDEXING=true`를 넣고 `$C up -d`를 합니다. 검색에 노출됩니다.
-
-## 13. Node 운영본에서 넘어올 때 (한 번만)
-
-예전 Node 구성(`shrine` + `caddy`, SQLite)으로 운영하던 서버를 이 구성으로 바꾸는 순서입니다.
-
-- DB는 빈 PostgreSQL로 시작합니다. Node 백업(`shrine.db`가 든 `version 1`)은 이 서버에 되살릴 수 없습니다 (백업 도구가 알려 주고 멈춤). 사당은 운영자 화면이나 `shrine.cli add`로 다시 넣습니다.
-- 프로젝트 이름이 같은 `deploy`라서 인증서 볼륨 `deploy_caddy-data`는 그대로 이어 씁니다.
-
-```bash
-cd /srv/musabaepo-shrine/deploy
-# 1) 새 코드를 받기 전에, 옛 구성으로 마지막 Node 백업을 뜨고 앱을 멈춥니다 (지금 있는 docker-compose.yml이 옛 Node 구성)
-docker compose exec -T shrine node --disable-warning=ExperimentalWarning server/backup.ts
-docker compose stop shrine
-# 2) 새 코드 + .env에 POSTGRES_PASSWORD · APP_DB_PASSWORD 두 줄 추가 (openssl rand -hex 24)
-git fetch --tags && git checkout <새 태그>
-# 3) 새 구성으로 띄우고, 옛 shrine 컨테이너(이제 compose 파일에 없음)를 치웁니다
-C="docker compose --env-file ../.env"
-$C up -d --build --remove-orphans
-$C ps && curl https://<도메인>/healthz
-```
-
-- `/etc/cron.d/musabaepo-shrine`이 부르는 `/usr/local/bin/shrine-backup`을 7장의 새 스크립트로 바꿉니다. 옛 스크립트(`server/backup.ts`)는 이제 매일 실패합니다.
-- 옛 데이터 볼륨 `deploy_shrine-data`(SQLite · 이미지)와 옛 Node 백업 tar에는 개인정보가 들어 있습니다. 새 서버가 잘 도는 것을 확인한 뒤, 늦어도 14일 안에 지웁니다 (`docker volume rm deploy_shrine-data`, 옛 백업은 7장의 prune이 기한대로 지움).
-- 옛 이미지 `musabaepo-shrine:*`도 지웁니다 (`docker image rm`).
-
-**Node 구성과 다른 점**
-
-| 항목 | Node | 지금 |
-|---|---|---|
-| DB | `shrine-data` 볼륨의 SQLite 파일 | `pg-data` 볼륨의 PostgreSQL |
-| compose 실행 | `docker compose …` | `docker compose --env-file ../.env …` (`$C`) |
-| 앱 서비스 · 이미지 이름 | `shrine` · `musabaepo-shrine` | `api`(별칭 `shrine`) · `musabaepo-shrine-api` |
-| 운영 도구 | `exec shrine node … server/cli.ts` | `exec api python -m shrine.cli` (명령 · 인자 · 출력은 같음) |
-| 백업 만들기 | `exec shrine node server/backup.ts` 한 줄 | postgres의 `pg_dump` → `backup` 컨테이너의 `create --dump -` (파이프, `run --rm`) |
-| 백업 안의 DB | `shrine.db` | `db.dump` (pg_dump -Fc), manifest `version: 2` |
-| 복구 | `restore` 한 번 | DB(`--db-to -` → pg_restore)와 이미지(`--uploads-only`) 두 번 |
-| DB 구조 바꾸기 전 사본 | `pre-migrate/` | 없음 (Alembic, 업데이트 전 백업으로 대신) |
-| 로그아웃한 운영자 세션 | 메모리 (앱을 다시 띄우면 잊음) | Redis (세션이 끝날 때까지) |
-| 실시간 IP당 동시 연결 기본값 (`WS_MAX_PER_IP`) | 12 | 4 (IPv6는 /64를 한 IP로 셈) |
-| 등록소 이미지 상한 | 10MiB | 5MiB |
-| 자리 비움으로 끊기 (정원 90% 이상) | 10분 동안 아무 메시지 없음 | 3분 동안 실제로 한 일 없음 (같은 자리 이동 신호는 세지 않음) |
-| 게시판 글이 신고로 숨는 조건 | 서로 다른 IP 해시 3개 | IP(/64) · 입장 표가 둘 다 다른 3명 |
-| 운영자 전체 로그인 잠금 (15분 50번) | 늘 | `ADMIN_IPS`가 있으면 쓰지 않음 (IP별 잠금은 같음) |
-| 앱의 DB 계정 | (SQLite) | `shrine_app` (슈퍼유저 아님) |
-| 백업 폴더 | 앱이 씀 | 앱은 읽기만, `backup` 컨테이너가 씀 (서명은 선택) |

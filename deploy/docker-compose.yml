@@ -10,7 +10,7 @@
 # 첫 배포 · 업데이트 · 롤백 · 백업 · 복구 · 서버 옮기기는 deploy/README.md에 적어 두었습니다.
 #
 # 앱 포트는 밖으로 열지 않음(Caddy만 reverse_proxy shrine:3300 → api 서비스의 별칭 'shrine'), 읽기 전용 · 권한 최소 · 메모리 상한 · 로그 10MB×5.
-# 프로젝트 이름은 'deploy'로 고정합니다 (예전 Node 구성의 폴더 이름과 같아서 caddy-data 인증서 볼륨 deploy_caddy-data를 그대로 이어 씀).
+# 프로젝트 이름은 'deploy'로 고정합니다 (볼륨 이름이 늘 deploy_pg-data · deploy_caddy-data … 로 같게).
 #
 # Redis는 디스크에 쓰지 않습니다 (RDB 저장 · AOF 모두 끔, 볼륨 없음).
 #   담는 것: 요청 제한 횟수 · 잠금 · 신고처럼 짧게만 필요한 상태뿐이고, 모든 키에 만료가 있습니다.

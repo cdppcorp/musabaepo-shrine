@@ -8,8 +8,8 @@
   uvicorn이 새 연결을 받지 않고, 열린 WebSocket에 1012(서버 재시작)를 보내고, 처리 중인 HTTP를
   최대 GRACEFUL_S초 기다립니다 → 그다음 lifespan 끝: ctx.stopping=True → ctx.shutdown_hooks를 거꾸로
   (훅마다 SHUTDOWN_HOOK_S초) → 주기 작업 취소 → Redis · DB 닫기. 신호를 두 번 받으면 uvicorn이 바로 끝냅니다.
-  P3: 실시간 정리(접속자 상태 · 타이머)는 ctx.on_shutdown(...)으로 붙입니다. 1012는 uvicorn이 이미 보냅니다
-      (uvicorn/protocols/websockets/*.py shutdown). 앱이 직접 닫는 순서가 필요하면 그 훅에서 먼저 닫습니다.
+  P3: 신호 · 잡히지 않은 예외 · SHRINE_TEST_STDIN 시험 훅은 realtime/lifecycle.py (ShrineServer)가 받아
+      '끝내는 중 (SIGTERM) …' → 듣는 소켓 닫기 → WebSocket 1012 'restart' (최대 3초) → 위 순서 → 종료 코드 0 (예외면 1, 8초 넘으면 강제).
 
 실행:  uv run python -m shrine [--env-file ../.env]     (app/ 폴더에서)
 """
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -37,7 +38,7 @@ log = logging.getLogger("shrine")
 #: Caddy의 keep-alive(4초)보다 길게: 앱이 먼저 끊으면 그 사이 요청이 드물게 502가 됩니다 (main.ts:44와 같은 130초)
 KEEP_ALIVE_S = 130
 #: 처리 중인 요청 · WebSocket 정리를 기다리는 시간 (Node: WS 3초 + HTTP 2초)
-GRACEFUL_S = 5
+GRACEFUL_S = 2  # P3: WebSocket 1012 · 3초는 lifecycle이 먼저 하므로 여기는 HTTP만 (Node HTTP_DRAIN_MS 2초)
 #: 끝내기 훅 하나당 제한 (전체가 Docker stop_grace_period 15초 안에 끝나게)
 SHUTDOWN_HOOK_S = 3
 
@@ -92,6 +93,9 @@ async def startup(ctx: AppContext) -> None:
         raise StartupError(f"[shrine] 업로드 폴더를 만들지 못했습니다 ({ctx.uploads.dir}): {e}") from e
 
     ctx.db = Database(config.database_url)
+    from .realtime.lifecycle import set_lock_timeout  # P3: 잠금은 3초까지만 기다림 (Node busy_timeout 3000)
+
+    set_lock_timeout(ctx.db)
     try:
         await ctx.db.ping(5)
     except Exception as e:
@@ -123,7 +127,9 @@ async def startup(ctx: AppContext) -> None:
 
 async def shutdown(ctx: AppContext) -> None:
     ctx.stopping = True
-    say("[shrine] 끝내는 중 …")
+    why = ctx.__dict__.get("stop_reason")  # P3: 신호 · 예외로 끝낼 때는 lifecycle이 이미 '끝내는 중 (까닭) …'을 남김
+    if why is None:
+        say("[shrine] 끝내는 중 …")
     for hook in reversed(ctx.shutdown_hooks):
         try:
             await asyncio.wait_for(hook(ctx), SHUTDOWN_HOOK_S)
@@ -140,7 +146,7 @@ async def shutdown(ctx: AppContext) -> None:
             await ctx.db.dispose()
         except Exception:
             log.exception("[shrine] DB 닫기 실패")
-    say("[shrine] 끝났습니다")
+    say(f"[shrine] 끝났습니다 ({why})" if why else "[shrine] 끝났습니다")
 
 
 def run(config: Config) -> None:
@@ -151,7 +157,9 @@ def run(config: Config) -> None:
     # Alembic의 단계별 안내는 숨기고, 구조를 바꿨을 때만 db/engine.py가 한 줄 남깁니다
     logging.getLogger("alembic").setLevel(logging.WARNING)
     app = create_app(config)
-    uvicorn.run(
+    from .realtime import lifecycle  # P3: 신호 · 예외 · 시험 훅을 직접 받는 uvicorn.Server
+
+    uv = uvicorn.Config(
         app,
         host=config.host.strip("[]"),
         port=config.port,
@@ -167,4 +175,9 @@ def run(config: Config) -> None:
         # 접속 기록은 Caddy가 IP를 가려서 남깁니다. 앱은 원래 IP를 로그에 남기지 않습니다
         access_log=False,
         log_level="info",
+        # P3: 메시지 512바이트 넘으면 1009 · 압축 없음 · ping 25초 (realtime.ts WebSocketServer 설정)
+        **lifecycle.WS_OPTIONS,
     )
+    code = lifecycle.serve(uv, app.state.ctx)
+    if code:
+        sys.exit(code)

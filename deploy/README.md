@@ -453,3 +453,176 @@ docker compose exec caddy ls -l /var/log/caddy                   # 넘긴 파일
 **공개하는 날**
 
 `.env`에 `ALLOW_INDEXING=true`를 넣고 `docker compose up -d`를 합니다. 검색에 노출됩니다.
+
+---
+
+## 13. Python 서버(이전 후)
+
+> 이 장은 Python 서버 구성(`deploy/docker-compose.py.yml`: api + PostgreSQL + Redis + Caddy)로 바꾼 뒤에 씁니다.
+> 바꾸기 전까지 운영본은 위 1~12장의 Node 구성입니다. 두 구성을 동시에 띄우지 않습니다 (80 · 443이 겹침).
+
+명령은 모두 `deploy/` 폴더에서, 아래 별칭을 건 셸에서 실행한다고 가정합니다.
+
+```bash
+cd /srv/musabaepo-shrine/deploy
+C="docker compose --env-file ../.env -f docker-compose.py.yml"
+```
+
+### 13.1 구성
+
+| 이름 | 하는 일 | 바깥에 여는 포트 |
+|---|---|---|
+| `api` (별칭 `shrine`) | 앱 (FastAPI + uvicorn 워커 1개, HTTP + WebSocket) | 없음. Caddy만 3300으로 붙습니다 |
+| `postgres` | DB (PostgreSQL 17) | 없음 |
+| `redis` | 요청 제한 · 잠금 · 로그아웃한 운영자 세션 같은 짧은 상태. 디스크에 쓰지 않음 | 없음 |
+| `caddy` | Node 구성과 같은 `Caddyfile` | 80/tcp, 443/tcp, 443/udp |
+
+| 저장 위치 | 내용 |
+|---|---|
+| 볼륨 `pg-data` | DB 전부 (사당 · 접수 · 초 · 글 · 차단 · 운영 기록) |
+| 볼륨 `api-data` (`/data`) | `uploads/`(등록소 이미지) |
+| 호스트 `deploy/backups/` (`/backups`) | 백업 tar 파일 (Node 구성과 같은 폴더, 주인 uid 1000) |
+
+- Redis는 다시 띄우면 비어 있습니다 (Node의 메모리와 같음). 오래 남아야 하는 것은 모두 PostgreSQL에 있습니다.
+- 백업 폴더 주인은 Node 때와 같이 `sudo chown 1000:1000 backups && sudo chmod 700 backups`입니다.
+
+### 13.2 운영 도구 (CLI)
+
+명령 이름 · 인자 · 출력은 Node의 `server/cli.ts`와 같습니다 (목록은 저장소 루트 README의 '운영 도구' 그대로).
+
+```bash
+$C exec -T api python -m shrine.cli list
+$C exec -T api python -m shrine.cli projects
+$C exec -T api python -m shrine.cli approve <접수번호> [자리|-] [채널]
+$C exec -T api python -m shrine.cli status <slug> check
+$C exec -T api python -m shrine.cli block-ip <IP> 12h [사유]
+$C exec -T api python -m shrine.cli blocks
+$C exec -T api python -m shrine.cli upload - < shot.png        # 표준 입력은 -T가 꼭 필요합니다
+$C exec -T api python -m shrine.cli add - < my-shrine.json
+$C exec -T api python -m shrine.cli schema                     # DB 구조 버전 (Alembic 0001 = Node v4)
+```
+
+- 서버가 떠 있는 동안 바꾼 사당은 30초 안에 맵에 반영됩니다. 차단 · 풀기는 10초 안에 반영되고 걸린 접속자는 그때 끊깁니다.
+- 로컬 개발에서는 `app/` 폴더에서 `uv run python -m shrine.cli --env-file ../.env list`처럼 씁니다
+  (`--env-file`: 있는 환경 변수가 이기고, 파일이 없으면 건너뜀. Node `npm run shrine`의 `--env-file-if-exists=.env`와 같은 규칙).
+- DB를 열 때 서버처럼 Alembic을 올립니다. 이 서버가 모르는 더 새 구조면 `더 새 서버가 만든 DB`로 멈춥니다.
+
+### 13.3 운영자 화면
+
+Node와 같습니다 (4장 · 11장): `ADMIN_PASSWORD`(16자 이상)를 넣어야 켜지고, `ADMIN_IPS` 밖이면 404, 같은 출처 · 세션 쿠키 ·
+로그인 잠금(IP당 15분 5번, 전체 15분 50번) · 모든 작업을 `admin_log`에 남기는 것까지 같습니다. 다른 점은 하나입니다.
+
+- 로그아웃한 세션 목록을 Redis에 둡니다 (세션이 끝나는 시각까지). 그래서 앱만 다시 띄워도 로그아웃한 쿠키는 계속 막힙니다.
+  비밀번호를 바꾸고 다시 띄우면 예전 세션이 모두 끊기는 것은 Node와 같습니다.
+
+### 13.4 백업
+
+**무엇을 남기나**
+
+- 백업 하나는 tar 파일 하나입니다 (이름 규칙 · 보관 규칙은 7장과 같음: `shrine-YYYYMMDD-HHMMSSZ.tar`, UTC, 권한 600).
+  - `db.dump`: `pg_dump --format=custom`(-Fc). 서버가 도는 중에도 한 시점의 사본입니다 (pg_dump는 트랜잭션 하나로 뜸).
+  - `uploads/`: 등록소 이미지. DB 덤프를 다 받은 뒤에 넣으므로, 덤프가 가리키는 이미지는 모두 들어갑니다.
+  - `manifest.json`: 표별 행 수(덤프 안의 데이터를 풀어 센 수) · 이미지 수 · 파일별 SHA-256 · pg_dump 버전.
+- 앱 컨테이너에는 `pg_dump`가 없습니다. **호스트 cron이 postgres 컨테이너의 pg_dump를 앱 컨테이너의 백업 도구로 파이프로 넘깁니다** (결정 D8).
+- 보관 기간도 7장과 같습니다: 최근 `BACKUP_KEEP`개(14) · 만든 지 `BACKUP_MAX_DAYS - 1`일(13일). 복구 때 뜬
+  `backups/pre-restore-*.dump`(DB 전체 사본)도 같은 기한으로 지웁니다.
+- Node 백업(`version 1`, `shrine.db`)은 Python 서버에 되살릴 수 없습니다 (도구가 알려 주고 멈춤). 이전은 빈 DB로 시작합니다 (결정 D4).
+
+**명령**
+
+```bash
+$C exec -T postgres pg_dump -U shrine -d shrine --format=custom | $C exec -T api python -m shrine.backup create --dump -   # 만들기
+$C exec -T api python -m shrine.backup list                          # 목록
+$C exec -T api python -m shrine.backup verify /backups/<파일>         # 검사
+$C exec -T api python -m shrine.backup prune                         # 정리만
+```
+
+- `verify`가 확인하는 것
+  - tar 모양 (끊김 · 머리 검사값)
+  - `db.dump`를 끝까지 읽어 압축이 풀리는지, 표별 행 수가 만들 때와 같은지 (pg_restore 없이)
+  - 이미지 수 · 용량, 모든 파일의 SHA-256 (내용 손상)
+- 덤프가 비었거나 중간에 끊겼으면(pg_dump 실패) 백업 도구가 `[backup] …`을 쓰고 1로 끝나며 아무것도 남기지 않습니다.
+- 로컬 개발: `app/`에서 `uv run python -m shrine.backup --env-file ../.env create`. `pg_dump`가 PATH에 있으면 `DATABASE_URL`로 직접 뜨고,
+  없으면 `PG_DUMP`(명령 통째로, 예: `PG_DUMP="docker exec -i <pg 컨테이너> pg_dump -U shrine -d shrine -Fc"`)나 `--dump`를 씁니다.
+
+**매일 자동으로 + 서버 밖 사본**
+
+`/usr/local/bin/shrine-backup` (실행 권한 `chmod 700`):
+
+```sh
+#!/bin/sh
+# 매일 백업하고 서버 밖으로 복제합니다 (Python 서버)
+set -eu
+cd /srv/musabaepo-shrine/deploy
+C="docker compose --env-file ../.env -f docker-compose.py.yml"
+# postgres 컨테이너의 pg_dump(-Fc) → api 컨테이너의 백업 도구(표준 입력). 덤프가 비거나 끊기면 백업 도구가 1로 끝나 set -e로 멈춥니다
+$C exec -T postgres pg_dump -U shrine -d shrine --format=custom | $C exec -T api python -m shrine.backup create --dump -
+# 서버 밖 사본 (7장과 같음: sync / --delete라서 14일 규칙을 같이 지킴)
+rclone sync ./backups shrine-offsite:musabaepo-shrine --include 'shrine-*.tar'
+```
+
+`/etc/cron.d/musabaepo-shrine` (Node 때 줄을 이 줄로 바꿉니다):
+
+```
+30 4 * * * root /usr/local/bin/shrine-backup 2>&1 | logger -t shrine-backup
+```
+
+- 결과는 `journalctl -t shrine-backup`으로 봅니다. 실패 알림은 7장처럼 끝에 `&& curl -fsS <ping 주소>`를 붙입니다.
+- `pg_dump`는 postgres 컨테이너 안에서 유닉스 소켓으로 붙습니다 (컨테이너 안 접속은 비밀번호 없이 되는 이미지 기본값).
+
+### 13.5 복구
+
+복구는 **앱을 멈춘 상태에서** 합니다. 백업 도구는 앱(또는 운영 명령)이 DB에 붙어 있으면 되살리지 않고 멈춥니다
+(`pg_stat_activity`의 연결 이름 `musabaepo-shrine`으로 봄). DB에 이 백업에 없는 표(더 새 서버가 만든 표)가 있어도 멈춥니다.
+
+```bash
+cd /srv/musabaepo-shrine/deploy
+C="docker compose --env-file ../.env -f docker-compose.py.yml"
+F=/backups/shrine-20261117-193000Z.tar      # 컨테이너 안 경로 (호스트의 deploy/backups/…)
+# 0) 먼저 검사
+$C exec -T api python -m shrine.backup verify $F
+# 1) 앱 멈춤 (그동안 Caddy가 '잠시 정비 중' 화면을 보여 줌)
+$C stop api
+# 2) 지금 DB 사본 (되살린 뒤 문제가 있으면 이걸로 되돌림. 13일 뒤 prune이 지움)
+$C exec -T postgres pg_dump -U shrine -d shrine --format=custom > backups/pre-restore-$(date -u +%Y%m%d-%H%M%S)Z.dump
+# 3) DB: 검사한 db.dump를 꺼내 postgres 컨테이너의 pg_restore로 (한 트랜잭션: 실패하면 DB는 그대로)
+$C run --rm --no-deps -T api python -m shrine.backup restore $F --db-to - \
+  | $C exec -T postgres pg_restore -U shrine -d shrine --clean --if-exists --no-owner --no-privileges --single-transaction --exit-on-error
+# 4) 이미지: 지금 이미지는 /data/pre-restore-<시각>Z/로 옮겨 두고 바꿔 넣음
+$C run --rm --no-deps api python -m shrine.backup restore $F --uploads-only
+# 5) 다시 시작하고 확인
+$C up -d
+$C ps && curl https://<도메인>/healthz
+# 6) 확인이 끝나면 옮겨 둔 옛 이미지를 지웁니다 (개인정보가 들어 있으므로 늦어도 14일 안에)
+$C run --rm --no-deps api sh -c 'rm -rf /data/pre-restore-*'
+```
+
+- 3)에서 pg_restore가 실패하면 `set -e`가 없어도 DB는 바뀌지 않습니다 (`--single-transaction`). 그때는 4)로 넘어가지 말고 까닭을 봅니다.
+- 2)의 사본으로 되돌리기: `$C exec -T postgres pg_restore -U shrine -d shrine --clean --if-exists --no-owner --no-privileges --single-transaction --exit-on-error < backups/pre-restore-<시각>Z.dump`
+- Docker 없이 (로컬 · 일반 서버, `pg_dump` · `pg_restore`가 있을 때): 서버를 멈춘 뒤
+  `uv run python -m shrine.backup --env-file ../.env restore <파일>` 한 번이면 위 2)~4)를 차례로 합니다
+  (지금 DB는 `DATA_DIR/pre-restore-<시각>Z/db.dump`, 이미지는 같은 폴더의 `uploads/`로 옮겨 둠).
+
+**복구 연습** (분기에 한 번 권장, 운영 DB는 건드리지 않음)
+
+```bash
+$C exec -T api python -m shrine.backup verify /backups/<파일>
+$C exec -T postgres createdb -U shrine shrine_drill
+$C exec -T api sh -c 'tar -xOf /backups/<파일> db.dump' \
+  | $C exec -T postgres pg_restore -U shrine -d shrine_drill --no-owner --no-privileges --single-transaction --exit-on-error
+$C exec -T postgres psql -U shrine -d shrine_drill -c 'SELECT count(*) FROM shrines' -c 'SELECT count(*) FROM projects'
+# 행 수가 verify의 '표:' 줄과 같은지 보고 지웁니다
+$C exec -T postgres dropdb -U shrine shrine_drill
+```
+
+### 13.6 Node 구성과 다른 점 (운영자가 알아 둘 것)
+
+| 항목 | Node | Python |
+|---|---|---|
+| DB | `shrine-data` 볼륨의 SQLite 파일 | `pg-data` 볼륨의 PostgreSQL |
+| 백업 만들기 | `exec shrine node server/backup.ts` 한 줄 | postgres의 `pg_dump` → api의 `python -m shrine.backup create --dump -` (파이프) |
+| 백업 안의 DB | `shrine.db` | `db.dump` (pg_dump -Fc), manifest `version: 2` |
+| 복구 | `restore` 한 번 | DB(`--db-to -` → pg_restore)와 이미지(`--uploads-only`) 두 번 |
+| 복구 전 사본 | `DATA_DIR/pre-restore-…/` (DB + 이미지) | DB는 `backups/pre-restore-….dump`(prune이 13일 뒤 지움), 이미지는 `/data/pre-restore-…/` |
+| DB 구조 바꾸기 전 사본 | `pre-migrate/` | 없음 (Alembic, 업데이트 전 백업으로 대신) |
+| 로그아웃한 운영자 세션 | 메모리 (앱을 다시 띄우면 잊음) | Redis (세션이 끝날 때까지) |

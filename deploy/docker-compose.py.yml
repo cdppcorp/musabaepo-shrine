@@ -40,6 +40,8 @@ services:
       HOST: 0.0.0.0
       PORT: 3300
       DATA_DIR: /data
+      # 백업 tar (python -m shrine.backup). DB 덤프는 postgres 컨테이너의 pg_dump가 만들어 표준 입력으로 넘깁니다 (README)
+      BACKUP_DIR: /backups
       # 앱은 Caddy 뒤에서만 받습니다 (포트를 바깥에 열지 않음)
       TRUST_PROXY: "true"
       DATABASE_URL: postgresql://shrine:${POSTGRES_PASSWORD:?../.env에 POSTGRES_PASSWORD를 넣고 --env-file ../.env로 실행하세요}@postgres:5432/shrine
@@ -52,6 +54,8 @@ services:
     volumes:
       # 올린 이미지 (DATA_DIR/uploads)
       - api-data:/data
+      # 백업 (Node 구성과 같은 호스트 폴더 deploy/backups, 주인은 uid 1000: sudo chown 1000:1000 backups)
+      - ./backups:/backups
     expose:
       - "3300"
     # 헬스 체크는 Dockerfile의 HEALTHCHECK(python -m shrine.healthcheck → GET /healthz)
@@ -83,7 +87,7 @@ services:
       # 첫 실행에서 만드는 계정의 비밀번호 방식
       POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
     volumes:
-      # 이 볼륨이 DB 전부입니다. 백업은 호스트 cron의 pg_dump (P4, deploy/README.md에 적을 예정)
+      # 이 볼륨이 DB 전부입니다. 백업은 호스트 cron: 이 컨테이너의 pg_dump → api의 python -m shrine.backup (deploy/README.md 13장)
       - pg-data:/var/lib/postgresql/data
     expose:
       - "5432"

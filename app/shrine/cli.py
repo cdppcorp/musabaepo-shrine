@@ -1,9 +1,13 @@
-"""운영 명령 (server/cli.ts). 지금은 ``add`` · ``schema``만 옮겼습니다 (P2a, 적합성 시험이 사당을 넣을 때 씀).
-나머지 명령(list · upload · status · remove · move · posts · post-* · projects · approve · reject · erase · blocks ·
-block-ip · unblock)과 시험용 훅(``dev …``)은 P4에서 같은 이름 · 인자 · 출력 · 종료 코드로 채웁니다.
+"""운영 명령 (server/cli.ts). 명령 이름 · 인자 · 출력 · 종료 코드는 Node와 같습니다.
 
+    uv run python -m shrine.cli [--env-file ../.env] <명령> …
     uv run python -m shrine.cli add <사당.json | ->      (규칙 검사 후 추가. - 이면 표준 입력. "channel"을 빼면 1번 채널)
     uv run python -m shrine.cli schema                  (DB 구조 버전)
+  등록소 · 업로드 · 시험용 훅(projects · approve · reject · erase · upload · dev …)은 cli_registry.py,
+  사당 · 게시판 · 차단(list · status · remove · move · posts · post-* · blocks · block-ip · unblock)은 cli_ops.py.
+
+--env-file: 그 파일의 값을 환경 변수로 읽습니다 (이미 있는 환경 변수가 이깁니다, 파일이 없으면 건너뜀 —
+Node의 npm run shrine = node --env-file-if-exists=.env와 같은 규칙. 서버의 python -m shrine --env-file과 같음).
 
 환경 변수는 서버와 같습니다 (DATABASE_URL · TICKET_SECRET …). DB를 열 때 서버처럼 Alembic을 올립니다 (빈 DB → head).
 서버가 떠 있는 동안 넣은 사당은 서버의 사당 캐시가 30초 안에 다시 읽습니다 (Node와 같음).
@@ -26,10 +30,8 @@ USAGE = (
     "posts | post-hide <id> | post-show <id> | post-del <id> | projects [all] | approve <id> [자리|-] [채널] | reject <id> [사유] | "
     "erase <id> | blocks | block-ip <IP> <기간> [사유] | unblock <번호> | schema"
 )
-NOT_YET = frozenset(
-    {"list", "upload", "status", "remove", "move", "posts", "post-hide", "post-show", "post-del", "projects", "approve",
-     "reject", "erase", "blocks", "block-ip", "unblock", "dev"}
-)  # fmt: skip
+#: 아직 없는 시험용 훅 (dev npc-goals는 실시간 쪽 P3)
+NOT_YET = frozenset({"dev"})
 
 
 class CliFail(Exception):
@@ -124,6 +126,14 @@ async def run(argv: list[str]) -> int:
 
     if (code := await p2b_dispatch(argv)) is not None:
         return code
+    from .cli_ops import dispatch as p4_dispatch  # P4: list · status · remove · move · posts · post-* · blocks · block-ip · unblock
+
+    if (code := await p4_dispatch(argv)) is not None:
+        return code
+    if cmd == "dev" and a == "npc-goals":  # P3: NPC 목적지 뽑기 (npc.py dev_npc_goals)
+        from .npc import dev_npc_goals
+
+        return await dev_npc_goals(argv[2:])
     if cmd in NOT_YET:
         print(f"'{cmd}' 명령은 아직 Python 서버로 옮기지 않았습니다 (P4).", file=sys.stderr)
         return 1
@@ -145,12 +155,28 @@ async def run(argv: list[str]) -> int:
     return 0
 
 
+def load_env_file(argv: list[str]) -> list[str]:
+    """맨 앞의 ``--env-file <경로>`` (또는 ``--env-file=<경로>``)를 읽고 뺀 argv. 있는 환경 변수가 이기고, 파일이 없으면 건너뜁니다."""
+    import os
+
+    path: str | None = None
+    if argv and argv[0] == "--env-file" and len(argv) > 1:
+        path, argv = argv[1], argv[2:]
+    elif argv and argv[0].startswith("--env-file="):
+        path, argv = argv[0].split("=", 1)[1], argv[1:]
+    if path and os.path.isfile(path):
+        from dotenv import load_dotenv
+
+        load_dotenv(path, override=False, encoding="utf-8")
+    return argv
+
+
 def main() -> None:
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
             reconfigure(encoding="utf-8")
-    sys.exit(asyncio.run(run(sys.argv[1:])))
+    sys.exit(asyncio.run(run(load_env_file(sys.argv[1:]))))
 
 
 if __name__ == "__main__":

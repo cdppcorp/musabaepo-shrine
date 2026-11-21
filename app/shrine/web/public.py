@@ -26,6 +26,7 @@ from ..logic.links import is_safe_shrine_url, parse_github
 from ..logic.util import now_ms
 from ..logic.world import WORLD_JSON_TEXT, is_valid_look
 from ..posts import POST_MAX, list_posts
+from ..realtime import free_chat  # P3: 운영자 화면에서 바꾼 직접 채팅 (Node config.freeChat)
 from ..redis import FixedWindowLimiter
 from ..turnstile import verify_human
 from .api import fail, read_json, same_origin, ticket_of
@@ -74,7 +75,7 @@ def build_router(ctx: AppContext) -> APIRouter:
     async def world(request: Request) -> NodeResponse:
         public = await shrines.public_shrines(ctx)
         candles = await shrines.candle_summary(ctx)
-        chat = {"free": config.free_chat, "max": CHAT_MAX, "postMax": POST_MAX, "contact": config.contact_email}
+        chat = {"free": free_chat(ctx), "max": CHAT_MAX, "postMax": POST_MAX, "contact": config.contact_email}
         # 게시판에 꽂힌 쪽지 색을 그리려고 최근 글 주제만 함께 보냅니다
         recent = [p["topic"] for p in await list_posts(ctx, 16)]
         rest = json_stringify(

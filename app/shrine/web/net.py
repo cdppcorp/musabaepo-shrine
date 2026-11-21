@@ -7,15 +7,8 @@ IP는 그날만 쓰는 무작위 값(소금)과 섞은 해시로만 다룹니다
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import secrets
-import time
-from datetime import UTC, datetime
-
-from ..jscompat import js_trim
-
-KST_OFFSET_S = 9 * 3600
+from ..logic.crypto import DailyIpHasher
+from ..logic.jsstr import js_trim
 
 # Node가 같은 이름 머리글을 여러 번 받으면 버리고 첫 값만 두는 것 (그 밖은 ', '로 이음, cookie는 '; ')
 _DISCARD_DUPLICATES = frozenset(
@@ -53,27 +46,6 @@ def client_ip(scope: dict, trust_proxy: bool) -> str:
     return client[0] if client else "unknown"
 
 
-def kst_date(now: float | None = None) -> str:
-    """한국 시간 기준 YYYY-MM-DD (util.ts kstDate)."""
-    t = time.time() if now is None else now
-    return datetime.fromtimestamp(int(t) + KST_OFFSET_S, UTC).strftime("%Y-%m-%d")
-
-
-class DailyIpHasher:
-    """그날만 유효한 IP 해시: base64url(sha256(소금16 || ip)) 앞 22자."""
-
-    def __init__(self) -> None:
-        self._day = ""
-        self._salt = secrets.token_bytes(16)
-
-    def __call__(self, ip: str) -> str:
-        day = kst_date()
-        if day != self._day:
-            self._day = day
-            self._salt = secrets.token_bytes(16)
-        digest = hashlib.sha256(self._salt + ip.encode("utf-8", "surrogatepass")).digest()
-        return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")[:22]
-
-
+#: 그날만 유효한 IP 해시: base64url(sha256(소금16 || ip)) 앞 22자 (logic.crypto.DailyIpHasher).
 #: 프로세스에 하나 (Node security.ts의 모듈 변수와 같음)
 ip_hash = DailyIpHasher()

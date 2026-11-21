@@ -39,6 +39,9 @@ PATHS = [
     "/\u00ff\u0080", "/a?b/../c", "/a#b", "//h?x/y", "/api/%77orld", "/.well-known/security.txt",
     "//EXAMPLE.com/X", "//a..b/x", "//.a/x", "//a_b/x", "//a*b/x", "//09/x", "//08.1/x", "//4294967295/x",
     "//4294967296/x", "//1.2.3/x", "//[::1]x/y", "//[::1/x",
+    # 기준 주소(http://local)를 붙이는 규칙 (whatwg.py가 logic/weburl.py 위로 옮겨 온 뒤)
+    "", "?x", "#y", "..", "a/../b", "http:foo", "http:/x", "http://h/x", "HTTP://H/X", "http:\\\\h/x", "http:\\/h/x",
+    "https://h:443/x/../y", "ws://h/z", "http:", "http:?q", "/a@b/c", "/a:b", "//h/%2e%2E/x", "/\u00e9\u00ff",
 ]
 
 

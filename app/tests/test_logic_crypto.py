@@ -171,3 +171,85 @@ def test_pin_hash_cross_check() -> None:
     salt, h = py_hash.split(":")
     assert len(salt) == 22 and len(h) == 43
     assert C.hash_pin("1234", bytes(16)) == C.hash_pin("1234", bytes(16))
+
+
+# ── 엄격한 표 · 세션 · PIN (Node와 Python을 함께 고친 규칙) ──
+
+_B64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+
+def _flip_spare_bits(part: str) -> str | None:
+    """끝 글자에서 바이트로 풀리지 않는 남는 비트만 바꾼 글자 (관대한 디코드로는 같은 바이트). 남는 비트가 없으면 None."""
+    if len(part) % 4 not in (2, 3):
+        return None
+    return part[:-1] + _B64URL[_B64URL.index(part[-1]) ^ 1]
+
+
+def _resign(body: str, key: bytes) -> str:
+    return body + "." + C.b64url(hmac.new(key, body.encode(), "sha256").digest())
+
+
+def _non_canonical_variants(good: str, key: bytes) -> list[str]:
+    body, sig = good.split(".")
+    out = [good + "!!", good + "=", good + "=x", good + "==", good + ".extra", body + ".." + sig, "." + good, good + ".",
+           body + "." + sig + "A", body + " ." + sig, body + ".	" + sig]  # fmt: skip
+    flipped = _flip_spare_bits(sig)
+    assert flipped is not None and C.node_base64_decode(flipped) == C.node_base64_decode(sig)
+    out.append(body + "." + flipped)
+    for a, b in (("-", "+"), ("_", "/")):  # 표준 base64 글자도 관대한 디코드는 받았습니다
+        if a in sig:
+            out.append(body + "." + sig.replace(a, b))
+        if a in body:
+            out.append(_resign(body.replace(a, b), key))
+    fb = _flip_spare_bits(body)
+    if fb is not None:
+        out.append(_resign(fb, key))  # 본문 끝 남는 비트를 바꾸고 다시 서명: 예전에는 같은 표로 통과
+    return out
+
+
+def test_tickets_must_be_two_canonical_base64url_parts() -> None:
+    key = TICKET_SECRET.encode()
+    bad: list[str] = []
+    goods = []
+    for i in range(12):  # 본문 길이가 여러 가지가 되게 (남는 비트 · 표준 base64 글자 경우를 고루)
+        good = C.sign_ticket(make_ticket(nick="n" * i, sid="s-_" * (i % 4)), TICKET_SECRET)
+        goods.append(good)
+        bad += _non_canonical_variants(good, key)
+    node = run("tickets", sign=[], verify=goods + bad)
+    assert all(v is not None for v in node["verified"][: len(goods)])
+    assert all(C.verify_ticket(g, TICKET_SECRET) is not None for g in goods)
+    for raw, want in zip(bad, node["verified"][len(goods) :], strict=True):
+        assert want is None, ascii(raw)
+        assert C.verify_ticket(raw, TICKET_SECRET) is None, ascii(raw)
+
+
+def test_admin_sessions_must_be_canonical() -> None:
+    keys = C.admin_keys(TICKET_SECRET, ADMIN_PASSWORD)
+    now = int(time.time() * 1000)
+    goods = [C.sign_session({"sid": C.b64url(bytes([i]) * 18), "iat": now + i, "exp": now + 3600_000}, keys) for i in range(8)]
+    bad = [v for g in goods for v in _non_canonical_variants(g, keys.session_key)]
+    node = run("admin", sessions=[], raws=goods + bad, ips=[], passwords=[], hosts=[])
+    assert all(v is not None for v in node["read"][: len(goods)])
+    assert all(C.read_session(g, keys) is not None for g in goods)
+    for raw, want in zip(bad, node["read"][len(goods) :], strict=True):
+        assert want is None, ascii(raw)
+        assert C.read_session(raw, keys) is None, ascii(raw)
+
+
+def test_pin_rejects_stored_hash_with_wrong_sizes() -> None:
+    good = C.hash_pin("1234", bytes(range(16)))
+    salt_text, hash_text = good.split(":")
+    salt, digest = C.node_base64_decode(salt_text), C.node_base64_decode(hash_text)
+    odd = [
+        salt_text + ":!!",  # 예전: 해시가 빈 바이트 → 아무 PIN이나 맞음
+        C.b64url(salt[:15]) + ":" + hash_text,
+        C.b64url(salt + b"x") + ":" + hash_text,
+        salt_text + ":" + C.b64url(digest[:31]),
+        salt_text + ":" + C.b64url(digest + b"x"),
+        salt_text + ":" + C.b64url(b""),
+        C.b64url(b"") + ":" + hash_text,
+    ]
+    checks = [["1234", good], *(["1234", s] for s in odd), ["", salt_text + ":!!"]]
+    node = run("pins", hash=[], check=checks)
+    assert node["matches"] == [True] + [False] * (len(odd) + 1)
+    assert [C.pin_matches(pin, s) for pin, s in checks] == node["matches"]

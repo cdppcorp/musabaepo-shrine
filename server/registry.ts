@@ -238,9 +238,12 @@ function hashPin(pin: string): string {
 function pinMatches(pin: string, stored: string): boolean {
   const [saltText, hashText] = stored.split(':')
   if (!saltText || !hashText) return false
+  const salt = Buffer.from(saltText, 'base64url')
   const want = Buffer.from(hashText, 'base64url')
-  const got = scryptSync(pin, Buffer.from(saltText, 'base64url'), want.length)
-  return got.length === want.length && timingSafeEqual(got, want)
+  // hashPin이 만든 모양(소금 16바이트 · 해시 32바이트)이 아니면 어떤 PIN과도 맞지 않는 것으로 봅니다
+  if (salt.length !== 16 || want.length !== 32) return false
+  const got = scryptSync(pin, salt, 32)
+  return timingSafeEqual(got, want)
 }
 
 const pinFails = new Map<number, { n: number; until: number }>()

@@ -42,6 +42,10 @@ def install(app: FastAPI, ctx: AppContext) -> None:
     # 9~12. 첫 화면 · 문서 · 사이트맵
     app.include_router(pages.build_router(page), prefix=base)
     # 13~20. (P2) 공개 API · 업로드 이미지 · /go
+    from . import public  # P2a: /api/world · /api/posts · /api/enter · /go/<slug>[/repo]
+    app.include_router(public.build_router(ctx), prefix=base)
+    from . import registry as p2b_registry  # P2b: /api/upload · /api/submit · /api/manage/* · /img/shrines/up/* · 주기 작업
+    p2b_registry.install(app, ctx)
 
     # 21~22. 그 밖: GET/HEAD는 정적 파일, 나머지 메서드는 404 글자
     async def fallback(request: Request) -> NodeResponse:

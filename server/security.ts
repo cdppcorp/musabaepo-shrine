@@ -56,8 +56,12 @@ export function signTicket(t: Ticket): string {
 
 export function verifyTicket(raw: string | undefined): Ticket | null {
   if (!raw || raw.length > 600) return null
-  const [body, sig] = raw.split('.')
-  if (!body || !sig) return null
+  // 정확히 두 조각, 조각마다 정규 base64url (A-Z a-z 0-9 - _ 만, 패딩 없음, 다시 인코딩하면 같은 글자)
+  const parts = raw.split('.')
+  if (parts.length !== 2) return null
+  const [body, sig] = parts as [string, string]
+  const canonical = (p: string) => /^[A-Za-z0-9_-]+$/.test(p) && Buffer.from(p, 'base64url').toString('base64url') === p
+  if (!canonical(body) || !canonical(sig)) return null
   const expected = mac(body)
   const got = Buffer.from(sig, 'base64url')
   if (got.length !== expected.length || !timingSafeEqual(got, expected)) return null

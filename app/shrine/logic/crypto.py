@@ -3,6 +3,7 @@
 | 함수 | 원본 |
 |---|---|
 | ``b64url`` | ``buf.toString('base64url')`` (패딩 없음) |
+| ``is_canonical_b64url`` | security.ts ``verifyTicket`` · admin.ts ``readSession`` 안의 ``canonical`` |
 | ``node_base64_decode`` | ``Buffer.from(s, 'base64url')`` — 잘못된 글자는 건너뛰고 ``=``에서 멈추는 관대한 디코드 (nbytes Base64Decode) |
 | ``parse_cookies`` | security.ts:75-82 ``parseCookies`` |
 | ``TICKET_TTL_MS`` · ``TICKET_COOKIE`` · ``sign_ticket`` · ``verify_ticket`` | security.ts:47-73 |
@@ -18,13 +19,13 @@
 문자열 → 바이트는 모두 ``jsstr.utf8_encode`` (짝 없는 서로게이트 → EF BF BD, Node와 같음)입니다.
 비밀 값(TICKET_SECRET 등)도 Node처럼 UTF-8 바이트를 HMAC 키로 씁니다.
 
-Node와 일부러 똑같이 둔 버릇 (고칠지는 연결하는 쪽이 정합니다):
+엄격하게 보는 곳 (Node와 Python을 함께 고쳤습니다. 예전에는 관대한 디코드 때문에 같은 표가 여러 글자로 통했습니다):
 
-- ``verify_ticket`` · ``read_session``의 서명 비교는 ``Buffer.from(sig, 'base64url')``이라 서명 뒤에 잘못된 글자 · ``=`` 뒤 글자가
-  붙어도 통과합니다 (``…sig!!``, ``…sig=x``). 본문 쪽은 서명이 본문 글자 그대로에 걸려 있어 바꿀 수 없습니다.
-- ``verify_ticket``은 ``.``으로 나눈 앞 두 조각만 봅니다 (``a.b.c``도 통과할 수 있음). ``read_session``은 정확히 두 조각.
-- ``pin_matches``: 저장값의 해시 부분이 빈 바이트로 풀리면(``salt:!!``) scrypt 길이 0끼리 비교라 어떤 PIN이든 맞습니다.
-  저장값은 서버만 만들므로(늘 32바이트) 실제로는 생기지 않습니다.
+- ``verify_ticket`` · ``read_session``: ``.``으로 나눈 조각이 정확히 두 개이고, 두 조각 모두 정규 base64url이어야 합니다
+  (``[A-Za-z0-9_-]+``, ``=`` 없음, 풀었다가 다시 인코딩하면 같은 글자 → 남는 비트가 0이 아니거나 4로 나눠 1이 남는 길이는 거절).
+  그래서 ``…sig!!`` · ``…sig=x`` · ``a.b.c`` · 끝 글자의 남는 비트만 바꾼 서명은 모두 통과하지 못합니다.
+- ``pin_matches``: 저장값의 소금이 16바이트, 해시가 32바이트로 풀리지 않으면 어떤 PIN과도 맞지 않습니다
+  (예전에는 ``salt:!!``처럼 해시가 빈 바이트로 풀리면 길이 0끼리 비교라 아무 PIN이나 맞았습니다).
 """
 
 from __future__ import annotations
@@ -58,6 +59,7 @@ __all__ = [
     "block_key",
     "hash_pin",
     "ip_key_mac",
+    "is_canonical_b64url",
     "is_loopback_host",
     "make_nick",
     "new_session",
@@ -80,6 +82,18 @@ __all__ = [
 def b64url(data: bytes) -> str:
     """``buf.toString('base64url')``: URL 안전 알파벳, ``=`` 없음."""
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+_B64URL_TEXT = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def is_canonical_b64url(s: str) -> bool:
+    """정규 base64url 글자인지: URL 안전 알파벳만(빈 글자 · ``=`` 불가), 풀었다가 다시 인코딩하면 같은 글자.
+
+    Node ``canonical`` (security.ts ``verifyTicket`` · admin.ts ``readSession``):
+    ``/^[A-Za-z0-9_-]+$/.test(p) && Buffer.from(p, 'base64url').toString('base64url') === p``
+    """
+    return _B64URL_TEXT.fullmatch(s) is not None and b64url(node_base64_decode(s)) == s
 
 
 _UNB64 = [-1] * 256
@@ -224,13 +238,17 @@ def _check_signed(body: str, sig: str, key_mac: Callable[[str], bytes]) -> Any:
 
 
 def verify_ticket(raw: str | None, secret: str | bytes, now: int | None = None) -> dict[str, Any] | None:
-    """security.ts ``verifyTicket``: 통과하면 표(dict, 받은 그대로), 아니면 None."""
+    """security.ts ``verifyTicket``: 통과하면 표(dict, 받은 그대로), 아니면 None.
+
+    정확히 두 조각(``본문.서명``)이고 두 조각 모두 정규 base64url이어야 합니다 (``is_canonical_b64url``).
+    """
     if not raw or utf16_len(raw) > 600:
         return None
     parts = raw.split(".")
-    body = parts[0]
-    sig = parts[1] if len(parts) > 1 else ""
-    if not body or not sig:
+    if len(parts) != 2:
+        return None
+    body, sig = parts
+    if not is_canonical_b64url(body) or not is_canonical_b64url(sig):
         return None
     t = _check_signed(body, sig, lambda b: _mac(secret, b))
     if t is None:
@@ -421,6 +439,8 @@ def read_session(
     parts = raw.split(".")
     if len(parts) != 2 or not parts[0] or not parts[1]:
         return None
+    if not is_canonical_b64url(parts[0]) or not is_canonical_b64url(parts[1]):
+        return None
     v = _check_signed(parts[0], parts[1], lambda b: _hmac(keys.session_key, utf8_encode(b)))
     if v is None:
         return None
@@ -468,12 +488,15 @@ def hash_pin(pin: str, salt: bytes | None = None) -> str:
 
 
 def pin_matches(pin: str, stored: str) -> bool:
-    """registry.ts:238-244 ``pinMatches``: 저장값을 관대한 base64url로 풀어 같은 길이로 scrypt, 상수 시간 비교."""
+    """registry.ts ``pinMatches``: 저장값을 (관대한) base64url로 풀어 소금 16바이트 · 해시 32바이트가 아니면 False,
+    맞으면 scrypt(pin, 소금, 32)와 상수 시간 비교. scrypt는 CPU를 오래 쓰므로 요청 처리에서는 스레드에서 부릅니다."""
     parts = stored.split(":")
     salt_text = parts[0]
     hash_text = parts[1] if len(parts) > 1 else ""
     if not salt_text or not hash_text:
         return False
+    salt = node_base64_decode(salt_text)
     want = node_base64_decode(hash_text)
-    got = _scrypt(pin, node_base64_decode(salt_text), len(want))
-    return len(got) == len(want) and hmac.compare_digest(got, want)
+    if len(salt) != 16 or len(want) != 32:
+        return False
+    return hmac.compare_digest(_scrypt(pin, salt, 32), want)

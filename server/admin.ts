@@ -162,6 +162,9 @@ function readSession(req: IncomingMessage): Session | null {
   const parts = raw.split('.')
   if (parts.length !== 2 || !parts[0] || !parts[1]) return null
   const [body, sig] = parts as [string, string]
+  // 조각마다 정규 base64url (A-Z a-z 0-9 - _ 만, 패딩 없음, 다시 인코딩하면 같은 글자)
+  const canonical = (p: string) => /^[A-Za-z0-9_-]+$/.test(p) && Buffer.from(p, 'base64url').toString('base64url') === p
+  if (!canonical(body) || !canonical(sig)) return null
   const want = createHmac('sha256', A.sessionKey).update(body).digest()
   const got = Buffer.from(sig, 'base64url')
   if (got.length !== want.length || !timingSafeEqual(got, want)) return null

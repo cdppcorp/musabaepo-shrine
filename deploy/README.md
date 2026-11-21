@@ -13,6 +13,7 @@
   `--env-file ../.env`는 compose 파일 안의 `${POSTGRES_PASSWORD}` · `${APP_DB_PASSWORD}` · Caddy의 `${SHRINE_DOMAIN}` 같은 값을 채웁니다.
   빼면 `POSTGRES_PASSWORD를 넣고 --env-file ../.env로 실행하세요`처럼 멈춥니다.
 - `<도메인>`은 `.env`의 `SHRINE_DOMAIN`입니다.
+- 서버에 이미 nginx 같은 프록시가 80/443을 쓰고 있으면 13장 '다른 프록시 뒤에 둘 때'를 따릅니다. 그때는 Caddy가 172.17.0.1:8111에서 평문 HTTP만 받고, https · 인증서는 앞단이 맡습니다.
 
 ## 1. 구성
 
@@ -56,10 +57,10 @@
 ## 2. 서버 준비
 
 1. Docker Engine과 Compose v2를 설치합니다.
-2. 방화벽은 22(관리자 IP만), 80/tcp, 443/tcp, 443/udp만 엽니다. 3300 · 5432 · 6379는 열지 않습니다.
+2. 방화벽은 22(관리자 IP만), 80/tcp, 443/tcp, 443/udp만 엽니다. 3300 · 5432 · 6379는 열지 않습니다. (다른 프록시 뒤에 둘 때는 13장)
 3. DNS에 `<도메인>`의 A 레코드를 서버 IP로 겁니다.
    - AAAA(IPv6)는 서버가 IPv6로 실제 받는 것을 확인한 뒤에만 겁니다.
-   - Cloudflare를 쓴다면 **DNS only(회색 구름)** 로 둡니다. 주황 구름(프록시)이면 모든 방문자가 Cloudflare IP로 보여 IP 제한에 같이 걸립니다. 꼭 켜야 하면 `Caddyfile`의 `trusted_proxies` 주석을 풉니다 (11장).
+   - Cloudflare를 쓴다면 **DNS only(회색 구름)** 로 둡니다. 주황 구름(프록시)이면 모든 방문자가 Cloudflare IP로 보여 IP 제한에 같이 걸립니다. 꼭 켜야 하면 `Caddyfile`의 `trusted_proxies`를 Cloudflare 대역으로 바꿉니다 (11장).
 4. Cloudflare Turnstile 키를 `<도메인>`용으로 발급합니다.
 5. 코드를 받아 릴리스 태그로 맞춥니다.
    ```bash
@@ -443,7 +444,7 @@ $C exec caddy ls -l /var/log/caddy                   # 넘긴 파일 (access-<�
 
 **Cloudflare 프록시를 켤 때**
 
-`Caddyfile` 전역의 `servers { trusted_proxies … }` 주석만 풉니다.
+`Caddyfile` 전역 `servers`의 `trusted_proxies` 줄을 Cloudflare 대역 목록 전체(https://www.cloudflare.com/ips/)로 바꾸고, `client_ip_headers CF-Connecting-IP` 주석을 풉니다.
 
 - `reverse_proxy` 안의 `header_up X-Forwarded-For {client_ip}`는 늘 켜 둡니다. 앱이 받는 X-Forwarded-For가
   늘 값 하나(Caddy가 판단한 방문자 IP)라서, `trusted_proxies`를 켜도 방문자가 보낸 값이 앞에 남아 IP를 꾸미지 못합니다.
@@ -497,7 +498,7 @@ $C exec caddy ls -l /var/log/caddy                   # 넘긴 파일 (access-<�
 | 문제 있는 사당 | 운영자 화면, 또는 `$C exec -T api python -m shrine.cli status <slug> check`로 점검중 전환 |
 | Cloudflare Turnstile 장애 | 사람 확인을 못 해서 새 입장이 막힙니다. 운영에서는 끄는 설정이 없으니 복구를 기다립니다 |
 | 업데이트 뒤 앱이 계속 재시작 | `$C logs api`를 보고 6장대로 롤백 |
-| 인증서 발급 실패 | `$C logs caddy`. DNS A 레코드, 80 · 443 방화벽, `ACME_EMAIL` 값을 확인 |
+| 인증서 발급 실패 | `$C logs caddy`. DNS A 레코드, 80 · 443 방화벽, `ACME_EMAIL` 값을 확인. 다른 프록시 뒤라면 앞단 certbot · nginx 쪽입니다 (13장) |
 
 **DB 비밀번호 바꾸기**
 
@@ -513,3 +514,106 @@ $C up -d
 **공개하는 날**
 
 `.env`에 `ALLOW_INDEXING=true`를 넣고 `$C up -d`를 합니다. 검색에 노출됩니다.
+
+## 13. 다른 프록시 뒤에 둘 때 (예: 서버에 이미 nginx가 80/443을 쓰는 경우)
+
+한 서버에 여러 사이트가 있고 앞단 nginx가 80/443과 인증서를 이미 맡고 있으면, 기원소의 Caddy를 그 뒤에 둡니다.
+
+```
+방문자 ─https─▶ 앞단 nginx (80/443 · 인증서) ─http─▶ 172.17.0.1:8111 ─▶ caddy ─▶ api (shrine:3300)
+```
+
+`docker-compose.behind-proxy.yml`을 덧씌우면 caddy만 바뀝니다.
+
+- 80/443을 열지 않고 `172.17.0.1:8111`에서 평문 HTTP만 받습니다. 172.17.0.1은 Docker 기본 브리지(docker0)의 게이트웨이라 서버 안(호스트 · 컨테이너)에서만 닿습니다.
+- 인증서를 받지 않습니다 (사이트 주소가 `http://:80`). `ACME_EMAIL`은 비워 둬도 됩니다.
+- 방문자 IP는 앞단이 보낸 `X-Forwarded-For`에서 읽습니다. 믿는 앞단은 `SHRINE_TRUSTED_PROXIES`(기본 사설 대역)이고, 앱에는 늘 값 하나만 넘깁니다.
+- 접속 기록(IP 일부 가림 · 30일), 요청 크기 상한, 보안 헤더(HSTS 포함), '잠시 정비 중' 화면은 단독 모드와 같습니다.
+- api · postgres · redis · backup과 볼륨은 그대로입니다. 단독 모드와 오가도 데이터는 같습니다.
+- 앞단 nginx 설정 예시는 `deploy/nginx-front.example.conf`입니다.
+
+**.env**
+
+- `SHRINE_DOMAIN=<도메인>`, `PUBLIC_ORIGIN=https://<도메인>`
+  - `PUBLIC_ORIGIN`은 방문자가 주소창에서 여는 주소와 똑같아야 합니다. 앱이 WebSocket · 입장 요청의 출처(Origin)를 이 값과 비교해서, 다르면 실시간 연결이 403으로 막힙니다.
+- `TRUST_PROXY=true` (기본 그대로). `ACME_EMAIL`은 비워 둬도 됩니다.
+- `COMPOSE_FILE=docker-compose.yml:docker-compose.behind-proxy.yml`을 넣어 두길 권합니다.
+  - 그러면 이 문서의 `C="docker compose --env-file ../.env"`(5장 업데이트, 6장 롤백, 7장 cron 스크립트 등)가 그대로 이 모드로 돕니다.
+  - 넣지 않으면 아래 `C`를 모든 곳에 씁니다. `-f` 없이 `up`을 하면 caddy가 80/443을 잡으려다 실패하고 사이트가 멈춥니다 (앞단 nginx가 이미 씀). 그때는 아래 `C`로 다시 `up -d`를 합니다.
+- 포트를 바꿀 때만 `SHRINE_PROXY_PORT`(기본 8111) · `SHRINE_PROXY_BIND`(기본 172.17.0.1). 바꾸면 nginx의 `proxy_pass`도 같이 바꿉니다.
+
+**기원소 띄우기**
+
+```bash
+cd /srv/musabaepo-shrine/deploy
+C="docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.behind-proxy.yml"
+$C up -d --build
+$C ps                     # caddy의 PORTS가 172.17.0.1:8111->80/tcp 하나뿐
+curl -sS -o /dev/null -w '%{http_code}\n' http://172.17.0.1:8111/healthz     # 서버 안에서: 200
+```
+
+나머지(2장의 `.env` · `backups` 폴더 준비, 4장 이후의 운영)는 단독 모드와 같습니다. 2장의 DNS · 방화벽 대신 아래를 봅니다.
+
+**앞단 nginx에 붙이기**
+
+`<앞단>`은 앞단 nginx 컨테이너 이름입니다 (예: `skillforge-nginx`).
+
+1. 앞단 nginx가 읽는 설정 폴더 · certbot webroot · 인증서 폴더를 확인하고, 앞단에서 기원소가 닿는지 봅니다.
+   ```bash
+   docker inspect <앞단> --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}'
+   docker exec <앞단> wget -qO- http://172.17.0.1:8111/healthz     # {"ok":true,…}가 오면 됨
+   ```
+2. DNS에 `<도메인>`의 A 레코드를 서버 IP로 겁니다.
+3. `deploy/nginx-front.example.conf`를 그 설정 폴더로 복사하고(예: `conf.d/shrine.conf`) `shrine.example.com`을 모두 `<도메인>`으로 바꿉니다.
+   - webroot(`/var/www/certbot`) · 인증서 경로는 그 서버의 다른 사이트 설정과 같게 맞춥니다.
+   - 인증서가 아직 없으니 처음에는 3)의 443 `server` 블록을 빼 둡니다. 없는 인증서 파일을 가리키면 `nginx -t`가 실패합니다.
+   - `map $http_upgrade $connection_upgrade`가 앞단에 이미 있으면 파일의 1) 블록은 지웁니다.
+4. 80 블록만으로 다시 읽습니다.
+   ```bash
+   docker exec <앞단> nginx -t && docker exec <앞단> nginx -s reload
+   ```
+5. 서버에 있는 certbot으로 webroot 방식 인증서를 받습니다. compose 폴더 · 서비스 이름 · webroot는 그 서버의 certbot 구성에 맞춥니다.
+   ```bash
+   cd <certbot이 있는 compose 폴더>      # 예: /var/www/clib-skills
+   docker compose run --rm --entrypoint certbot certbot certonly --webroot -w /var/www/certbot \
+     -d <도메인> --email <운영 메일> --agree-tos --no-eff-email
+   ```
+   - `--entrypoint certbot`: certbot 서비스에 갱신 반복(`certbot renew` 루프) 같은 entrypoint가 걸려 있어도 이 명령만 돌게.
+   - 갱신은 그 서버의 certbot이 다른 인증서와 함께 합니다. 갱신 뒤 nginx를 다시 읽는 방식도 기존 그대로입니다.
+6. 빼 두었던 443 블록을 다시 넣고 `nginx -t` → `nginx -s reload`.
+
+앞단 설정에서 지킬 것 (예시 파일에 이유를 적어 두었습니다):
+
+- `proxy_set_header X-Forwarded-For $remote_addr;` 로 **덮어씁니다**. `$proxy_add_x_forwarded_for`는 쓰지 않습니다. 방문자가 보낸 값 뒤에 덧붙이는 것이라 맨 앞 값을 방문자가 마음대로 정해 IP를 꾸미고, IP별 제한 · 차단 · `ADMIN_IPS`를 비켜 갈 수 있습니다. (Caddy도 `trusted_proxies_strict`로 오른쪽부터 읽어 막지만, 앞단에서 먼저 값을 하나로 만듭니다.)
+- `access_log off;` 개인정보 처리방침의 접속 기록(IP 일부 가림 · 30일)은 기원소 안의 Caddy가 지킵니다. 앞단이 이 사이트의 원래 IP를 따로 쌓지 않게 합니다.
+- `proxy_set_header Host $host;` · WebSocket 업그레이드 · `proxy_read_timeout 120s` (앱의 ping이 25초마다).
+- `client_max_body_size 8m;` (운영자 화면 이미지가 JSON 안 base64로 약 7MB까지).
+- 보안 헤더(HSTS 등)는 `add_header`로 더하지 않습니다. Caddy가 붙이므로 겹치면 두 번 나갑니다.
+
+**방화벽**
+
+- ufw에서 따로 열 것이 없습니다. 80/443은 앞단 nginx가 이미 쓰고, 8111은 열지 않습니다.
+- Docker가 연 포트는 ufw를 거치지 않습니다. 그래서 `SHRINE_PROXY_BIND`를 `0.0.0.0`이나 공인 IP로 바꾸면 ufw 설정과 상관없이 바깥에서 Caddy로 바로 붙어 앞단을 건너뜁니다. 172.17.0.1은 서버 밖에서 닿지 않으므로 그대로 둡니다.
+
+**확인**
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' https://<도메인>/healthz            # 200
+curl -sI https://<도메인>/ | grep -ciE '^strict-transport-security:'          # 1 (2면 앞단의 add_header를 지움)
+curl -sI http://<도메인>/ | head -1                                           # 301 (https로)
+```
+
+- WebSocket: 브라우저로 `https://<도메인>`을 열고 입장합니다. 개발자 도구 → Network → `WS`에서 `/ws` 요청이 `101`이면 앞단을 통과한 것입니다. `403`이면 `PUBLIC_ORIGIN`이 주소창 주소와 같은지 봅니다.
+- 방문자 IP: 내 PC에서 사이트를 몇 번 연 뒤 Caddy 접속 기록을 봅니다.
+  ```bash
+  $C exec caddy tail -n 5 /var/log/caddy/access.log | grep -o '"\(remote_ip\|client_ip\)":"[^"]*"'
+  ```
+  - `client_ip`가 내 공인 IP의 앞 3자리여야 합니다 (예: 내 IP가 203.0.113.57이면 `203.0.113.0`). `172.…`이면 앞단이 `X-Forwarded-For`를 넘기지 않거나 `SHRINE_TRUSTED_PROXIES`에 앞단 주소가 없는 것입니다 (모든 방문자가 한 IP로 보여 IP 제한에 같이 걸림).
+  - `remote_ip`는 앞단에서 붙은 주소(`172.….0`)입니다.
+- `ADMIN_IPS`에 내 IP를 넣어 두었다면, 내 PC에서는 `/admin`이 열리고 다른 곳(휴대폰 데이터 등)에서는 404여야 합니다. 앱이 실제 방문자 IP를 보고 있다는 뜻입니다.
+
+**믿는 앞단 좁히기 (선택)**
+
+- 기본 `SHRINE_TRUSTED_PROXIES`는 사설 대역 전체입니다. 앞단 nginx가 어느 Docker 네트워크에 있어도 맞게 하려는 것입니다.
+- 위 접속 기록의 `remote_ip` 대역(예: `172.20.0.0/16`)만 남겨 `.env`에 적고 `$C up -d`를 해도 됩니다. 접속 기록에는 앞 3자리만 남으니 대역은 `/16` 이상으로 넉넉히 적습니다.
+- 바깥 방문자는 앞단이 값을 덮어쓰므로 IP를 꾸밀 수 없습니다. 다만 이 서버의 다른 컨테이너도 172.17.0.1:8111에 닿을 수 있어서, 그쪽이 뚫리면 IP를 꾸며 보낼 수 있다는 정도의 위험은 남습니다.

@@ -8,6 +8,7 @@
 #     POSTGRES_PASSWORD   PostgreSQL 관리자(shrine, 슈퍼유저). 컨테이너 안에서 백업 · 복구할 때만 씀
 #     APP_DB_PASSWORD     앱 전용 계정(shrine_app, 슈퍼유저 아님 · DB 주인). api가 이 계정으로 붙음
 # 첫 배포 · 업데이트 · 롤백 · 백업 · 복구 · 서버 옮기기는 deploy/README.md에 적어 두었습니다.
+# 서버에 이미 다른 프록시(nginx 등)가 80/443을 쓰면 docker-compose.behind-proxy.yml을 덧씌웁니다 (README 13장).
 #
 # 앱 포트는 밖으로 열지 않음(Caddy만 reverse_proxy shrine:3300 → api 서비스의 별칭 'shrine'), 읽기 전용 · 권한 최소 · 메모리 상한 · 로그 10MB×5.
 # 프로젝트 이름은 'deploy'로 고정합니다 (볼륨 이름이 늘 deploy_pg-data · deploy_caddy-data … 로 같게).
@@ -168,6 +169,7 @@ services:
       - caddy-config:/config
       - caddy-logs:/var/log/caddy
     # Caddyfile의 {$SHRINE_DOMAIN} · {$ACME_EMAIL}만 넘깁니다 (.env의 비밀 값은 Caddy에 주지 않음).
+    # 다른 프록시 뒤에서는 docker-compose.behind-proxy.yml이 이 목록과 ports를 통째로 바꿉니다.
     # 값은 --env-file ../.env에서 채웁니다 (비어 있으면 Caddy가 시작하지 않음: Caddyfile 맨 위)
     environment:
       SHRINE_DOMAIN: ${SHRINE_DOMAIN:-}

@@ -1,0 +1,28 @@
+# 다른 리버스 프록시 뒤에 둘 때 docker-compose.yml 위에 덧씌웁니다 (서버에 이미 nginx 같은 프록시가 80/443을 쓰는 경우).
+# 절차 · 확인 방법은 deploy/README.md 13장, 앞단 nginx 설정 예시는 nginx-front.example.conf에 있습니다.
+#
+#   cd /srv/musabaepo-shrine/deploy
+#   C="docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.behind-proxy.yml"
+#   $C up -d --build
+#   (이 모드에서는 모든 명령을 이 $C로 합니다. -f 하나만 빼고 up 하면 Caddy가 80/443을 잡으려다 실패합니다)
+#
+# 바뀌는 것은 caddy 하나입니다. api · postgres · redis · backup과 볼륨은 그대로라, 단독 모드와 오가도 데이터는 같습니다.
+#   - 80/443을 열지 않고 ${SHRINE_PROXY_BIND}:${SHRINE_PROXY_PORT}(기본 172.17.0.1:8111)에서 평문 HTTP만 받습니다.
+#     172.17.0.1은 Docker 기본 브리지의 게이트웨이라 서버 안(호스트 · 컨테이너)에서만 닿고 바깥에서는 닿지 않습니다.
+#     0.0.0.0이나 공인 IP로 바꾸지 않습니다: Docker가 연 포트는 ufw를 거치지 않아, 앞단을 건너뛴 접속이 생깁니다.
+#   - 사이트 주소가 http://:80이라 인증서(ACME)를 받지 않습니다. https · 인증서는 앞단 프록시가 맡고, ACME_EMAIL은 필요 없습니다.
+#   - 앞단 프록시가 보낸 X-Forwarded-For로 방문자 IP를 정합니다 (SHRINE_TRUSTED_PROXIES에서 온 연결만, Caddyfile 'servers').
+#     앞단은 X-Forwarded-For를 $remote_addr 하나로 덮어써야 합니다. Caddy는 늘 그 값 하나만 앱에 넘깁니다.
+#   - 접속 기록(IP 일부 가림 · 30일) · 요청 크기 상한 · 보안 헤더 · '잠시 정비 중' 화면은 단독 모드와 같습니다.
+
+services:
+  caddy:
+    # docker-compose.yml의 80 · 443 · 443/udp를 모두 버리고 이것 하나만 엽니다
+    ports: !override
+      - "${SHRINE_PROXY_BIND:-172.17.0.1}:${SHRINE_PROXY_PORT:-8111}:80"
+    # docker-compose.yml의 SHRINE_DOMAIN · ACME_EMAIL 대신 이 둘만 넘깁니다 (Caddyfile 맨 위 · 사이트 주소 설명)
+    environment: !override
+      SHRINE_SITE_ADDRESS: "http://:80"
+      # X-Forwarded-For를 믿을 앞단 주소 (공백으로 구분). 기본은 사설 대역 전체: 앞단 nginx 컨테이너가 어느 Docker
+      # 네트워크에 있어도 맞게. 좁히려면 .env에 앞단 nginx 네트워크 대역만 적습니다 (README 13장)
+      SHRINE_TRUSTED_PROXIES: ${SHRINE_TRUSTED_PROXIES:-172.16.0.0/12 10.0.0.0/8 192.168.0.0/16 127.0.0.1/8}

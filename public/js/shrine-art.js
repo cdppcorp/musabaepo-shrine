@@ -28,13 +28,13 @@ function canvas() {
 }
 
 const hexRgb = h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]
-function shade(h, n) {
+export function shade(h, n) {
   const f = v => Math.max(0, Math.min(255, Math.round(v + n))).toString(16).padStart(2, '0')
   const [r, g, b] = hexRgb(h)
   return `#${f(r)}${f(g)}${f(b)}`
 }
 
-function hash(str) {
+export function hash(str) {
   let h = 2166136261
   for (let i = 0; i < str.length; i++) h = Math.imul(h ^ str.charCodeAt(i), 16777619)
   return h >>> 0
@@ -64,6 +64,27 @@ function outline(c) {
 }
 
 /* ── 사이트 화면 ── */
+
+const HUES = ['#3b6fd8', '#2f9e7a', '#d0703a', '#8a5ad0', '#c8484e', '#2a8fb0']
+/** 화면 없는 사이트의 색 (사당 이름으로 정해짐). 맵 부스 화면 · 사당 창 화면(site-mock.js)이 같은 색을 씁니다 */
+export const siteAccent = s => HUES[hash(s.slug || s.name || '') % HUES.length]
+
+const GREENS = ['#161b22', '#0e4429', '#006d32', '#26a641', '#39d353']
+/** 저장소 잔디 칸 색 [열][줄] (5줄, 열 먼저). 사당 이름으로 정해져 늘 같고, 맵 저장소 카드 · 사당 창 화면이 같은 칸을 씁니다 */
+export function repoCells(s, cols) {
+  let seed = hash(s.slug || s.domain || 'repo')
+  const out = []
+  for (let cx = 0; cx < cols; cx++) {
+    const col = []
+    for (let cy = 0; cy < 5; cy++) {
+      seed = Math.imul(seed ^ (seed >>> 15), 2246822519) >>> 0
+      const v = seed % 9
+      col.push(GREENS[v < 3 ? 0 : v < 5 ? 1 : v < 7 ? 2 : v < 8 ? 3 : 4])
+    }
+    out.push(col)
+  }
+  return out
+}
 
 /**
  * 사이트 화면 캔버스 만들기 (SCREEN_ART 크기). 그냥 줄이면 흰 바탕 사이트의 가는 글씨 · 버튼이 다 지워지므로,
@@ -168,22 +189,13 @@ function paintRepoCard(c, s, x, y) {
   R(4, 8, 4, 4, '#8b949e')
   R(10, 8, 22, 2, '#58a6ff'); R(10, 11, 14, 1, '#8b949e')
   R(46, 8, 14, 4, '#21262d'); R(48, 9, 2, 2, '#e3b341'); R(51, 10, 7, 1, '#8b949e')
-  const greens = ['#161b22', '#0e4429', '#006d32', '#26a641', '#39d353']
-  let seed = hash(s.slug || s.domain || 'repo')
-  for (let cx = 0; cx < 15; cx++) {
-    for (let cy = 0; cy < 5; cy++) {
-      seed = Math.imul(seed ^ (seed >>> 15), 2246822519) >>> 0
-      const v = seed % 9
-      R(3 + cx * 4, 16 + cy * 4, 3, 3, greens[v < 3 ? 0 : v < 5 ? 1 : v < 7 ? 2 : v < 8 ? 3 : 4])
-    }
-  }
+  repoCells(s, 15).forEach((col, cx) => col.forEach((g, cy) => R(3 + cx * 4, 16 + cy * 4, 3, 3, g)))
 }
 
 /** 화면 없는 사이트: 분류 색으로 만든 흔한 웹 페이지 모양 */
 function paintGenericPage(c, s, x, y) {
   const [w, h] = SCREEN_ART
-  const hues = ['#3b6fd8', '#2f9e7a', '#d0703a', '#8a5ad0', '#c8484e', '#2a8fb0']
-  const accent = hues[hash(s.slug || s.name || '') % hues.length]
+  const accent = siteAccent(s)
   const R = (a, b, ww, hh, col) => rect(c, x + a, y + b, ww, hh, col)
   R(0, 0, w, h, '#e9ecf2')
   R(0, 0, w, 5, '#ffffff')
@@ -199,6 +211,26 @@ function paintGenericPage(c, s, x, y) {
     R(6 + i * 20, 29, 12, 1, '#b4bccb')
     R(6 + i * 20, 31, 9, 1, '#cfd5e0')
   }
+}
+
+const arts = new Map()
+/**
+ * 실제 화면이 없을 때 거는 기본 화면 캔버스 (SCREEN_ART 크기): 저장소만 있으면 저장소 카드, 아니면 기본 웹 화면.
+ * 맵 부스와 같은 그림을 사당 창 정면 그림의 작은 화면에도 겁니다
+ */
+export function screenArt(s) {
+  const key = `${s.slug}|${s.domain}|${s.name}`
+  let cv = arts.get(key)
+  if (!cv) {
+    cv = document.createElement('canvas')
+    cv.width = SCREEN_ART[0]
+    cv.height = SCREEN_ART[1]
+    const c = cv.getContext('2d')
+    if (typeof s.domain === 'string' && s.domain.startsWith('github.com/')) paintRepoCard(c, s, 0, 0)
+    else paintGenericPage(c, s, 0, 0)
+    arts.set(key, cv)
+  }
+  return cv
 }
 
 /** 점검중: 어두운 화면에 노란 느낌표와 공사 띠 */

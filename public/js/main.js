@@ -8,7 +8,8 @@ import { CENSER_BOX, TEMPLE_BOX, drawCenser, drawTemple } from './temple.js'
 // 새 그림(AI 신당 · 게시판 · 등록소 · 흡연구역)은 이름표만 있어도 돌아가게 묶음으로 가져옵니다
 import * as AiArt from './ai-art.js'
 import * as AvatarMod from './avatar.js'
-import { SIGN_Y, drawEmptyHD, drawShrineHD, makeScreen } from './shrine-art.js'
+import { SIGN_Y, drawEmptyHD, drawShrineHD, makeScreen, screenArt } from './shrine-art.js'
+import { siteMock } from './site-mock.js'
 import { burst, drawDarkness, drawSky, glowLevel, glowTarget, toNextLevel, updateSky } from './light.js'
 import { drawLens } from './lens.js'
 
@@ -1453,15 +1454,30 @@ function openShrine(s) {
   const img = st.images.get(s.slug)
   const paint = () => {
     const small = shrink(img, 48, 27)
+    screen.width = 48
+    screen.height = 27
     const c = screen.getContext('2d')
     c.imageSmoothingEnabled = false
     c.drawImage(small, 0, 0)
   }
-  if (s.status === 'live' && img) img.complete && img.naturalWidth ? paint() : img.addEventListener('load', paint, { once: true })
+  // 실제 화면이 없거나 아직 · 끝내 못 불러왔으면 맵 부스와 같은 기본 화면(웹 페이지 · 저장소 카드)을 걸어 둡니다
+  const paintArt = () => {
+    const art = screenArt(s)
+    screen.width = art.width
+    screen.height = art.height
+    screen.getContext('2d').drawImage(art, 0, 0)
+  }
+  if (s.status === 'live') {
+    if (img?.complete && img.naturalWidth) paint()
+    else {
+      paintArt()
+      if (img && !img.complete) img.addEventListener('load', paint, { once: true })
+    }
+  }
   front.append(screen, el('span', 'front-banner', prayerLabel(s.prayer)))
   body.append(front)
-  // 등록한 서비스 화면은 한 줄 소개 바로 위에 펼쳐 둡니다 (화면이 없는 사당은 그대로)
-  if (s.screens?.[0]) body.append(shrineShot(s))
+  // 서비스 화면은 한 줄 소개 바로 위에 펼쳐 둡니다 (화면 이미지가 없는 사당은 도트로 그린 사이트 모양)
+  body.append(shrineShot(s))
   body.append(el('p', 'tagline', s.tagline))
 
   const badges = el('div', 'badges')
@@ -1539,17 +1555,24 @@ function openShrine(s) {
   updateSheetCount()
 }
 
-/** 사당 창의 서비스 화면: 작은 브라우저 틀(도메인) 안에 첫 장. 불러오지 못하면 틀째 빼서 깨진 그림이 남지 않게 합니다 */
+/**
+ * 사당 창의 서비스 화면: 작은 브라우저 틀(도메인) 안에 첫 장.
+ * 화면 이미지가 없거나 불러오지 못하면(깨진 그림 대신) 도트로 그린 사이트 모양(site-mock.js)을 같은 틀에 넣습니다
+ */
 function shrineShot(s) {
   const shot = el('figure', 'shot')
   const bar = el('div', 'shot-bar')
   bar.setAttribute('aria-hidden', 'true')
   bar.append(el('i'), el('i'), el('i'), el('span', null, s.domain))
+  if (!s.screens?.[0]) {
+    shot.append(bar, siteMock(s))
+    return shot
+  }
   const img = document.createElement('img')
   img.alt = `${s.name} 실제 화면`
   img.loading = 'lazy'
   img.decoding = 'async'
-  img.addEventListener('error', () => shot.remove(), { once: true })
+  img.addEventListener('error', () => img.replaceWith(siteMock(s)), { once: true })
   // 정사각 · 세로 이미지(대표 이미지 · 휴대폰 화면)는 자르지 않고 통째로 보여 줍니다
   img.addEventListener('load', () => img.classList.toggle('whole', img.naturalWidth < img.naturalHeight * 1.3), { once: true })
   img.src = `${BASE}/img/shrines/${s.screens[0]}`

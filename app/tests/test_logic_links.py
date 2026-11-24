@@ -195,7 +195,10 @@ def test_validate_and_public_shrine_match_node() -> None:
     node = run("shrines", items=items)
     for s, want in zip(items, node, strict=True):
         assert L.validate_shrine(s) == want["errors"], s
-        assert json_stringify(L.public_shrine(s, GOLDEN_NOW)) == want["pub"], s
+        # gosa 필드 추가 (Node 뒤): 맨 끝 키로 붙고, 골든(Node 모양)은 그 키를 뺀 것과 같아야 합니다
+        pub = L.public_shrine(s, GOLDEN_NOW)
+        assert list(pub)[-1] == "gosa" and pub.pop("gosa") == L.GOSA_DEFAULT, s
+        assert json_stringify(pub) == want["pub"], s
 
 
 def test_from_row_matches_node() -> None:
@@ -208,7 +211,10 @@ def test_from_row_matches_node() -> None:
     rows = [row, {**row, "deco": "{}", "screens": '["a.png"]', "channel": 2, "repo": "r", "project_id": 9, "sign": "s", "email_public": 0}]
     node = run("fromRow", rows=rows)
     for r, want in zip(rows, node, strict=True):
-        assert json_stringify(L.from_row(r)) == want
+        # gosa 필드 추가 (Node 뒤): 행에 없으면 기본 'cake'로 맨 끝에, 나머지는 Node 골든 그대로
+        got = L.from_row(r)
+        assert list(got)[-1] == "gosa" and got.pop("gosa") == L.GOSA_DEFAULT
+        assert json_stringify(got) == want
 
 
 def test_unique_slug_and_free_plots() -> None:

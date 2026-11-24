@@ -25,9 +25,11 @@ from .logic.jsnum import is_integer, is_number, json_stringify, number_to_string
 from .logic.jsstr import canonical, js_lower, js_trim, slice_units
 from .logic.links import (
     CATEGORY_KEYS,
+    GOSA_DEFAULT,
     SLUG_RE,
     domain_of,
     from_row,
+    is_gosa_key,
     is_prayer_key,
     is_valid_email,
     parse_github,
@@ -98,6 +100,15 @@ def _read_category(raw: Any) -> str:
     if not isinstance(raw, str) or raw not in CATEGORY_KEYS:
         raise OpError("분류를 골라 주세요")
     return raw
+
+
+def _read_gosa(raw: Any) -> str:
+    """고사상 물건 (logic/links.py GOSA_KEYS). 비우면(None · '') 기본 'cake'."""
+    if raw is None or (isinstance(raw, str) and raw == ""):
+        return GOSA_DEFAULT
+    if is_gosa_key(raw):
+        return raw
+    raise OpError("고사상을 골라 주세요 (cake · wreath · siru · bugeo)")
 
 
 def _read_status(raw: Any) -> str:
@@ -260,6 +271,7 @@ async def add_shrine(ctx, body: dict[str, Any], screens: list[str]) -> dict[str,
         prayer = "deploy" if body.get("prayer") is None or body.get("prayer") == "" else body.get("prayer")
         if not is_prayer_key(prayer):
             raise OpError("현판 기원을 골라 주세요")
+        gosa = _read_gosa(body.get("gosa"))
         want_channel = _read_channel(body.get("channel"), None)
         if body.get("plot") is None or body.get("plot") == "":
             free = await _first_free_spot(s, want_channel)
@@ -289,7 +301,7 @@ async def add_shrine(ctx, body: dict[str, Any], screens: list[str]) -> dict[str,
             "paid": False, "verifiedDomain": today, "verifiedBusiness": None, "joinedAt": today, "status": status,
             "prayer": prayer, "charm": None, "deco": [], "screens": screens, "capturedAt": today, "channel": channel,
             "plot": plot, "repo": links["github"], "email": email,
-            "emailPublic": body.get("emailPublic") is True if email else False, "projectId": 0, "sign": sign,
+            "emailPublic": body.get("emailPublic") is True if email else False, "projectId": 0, "sign": sign, "gosa": gosa,
         }  # fmt: skip
         _rules_or_throw(sh)
         await insert_shrine(s, sh)
@@ -299,11 +311,11 @@ async def add_shrine(ctx, body: dict[str, Any], screens: list[str]) -> dict[str,
 
 # ── 고치기 ───────────────────────────────────────────────────────────
 
-_FIELDS = ("name", "tagline", "sign", "category", "operator", "status", "domain", "url", "repo", "screens")
+_FIELDS = ("name", "tagline", "sign", "category", "operator", "status", "domain", "url", "repo", "screens", "gosa")
 
 
 async def update_shrine(ctx, slug_raw: Any, body: dict[str, Any], screens: list[str] | None = None) -> dict[str, Any]:
-    """이름 · 한 줄 소개 · 지붕 소개 · 분류 · 링크 · 운영 표시명 · 상태 · 이미지를 고칩니다 (보낸 칸만) → {shrine, changed}.
+    """이름 · 한 줄 소개 · 지붕 소개 · 분류 · 링크 · 운영 표시명 · 상태 · 이미지 · 고사상을 고칩니다 (보낸 칸만) → {shrine, changed}.
 
     등록소에서 온 사당이면 접수 기록도 같이 고쳐서, 작성자가 나중에 고칠 때 되돌아가지 않게 합니다.
     """
@@ -322,6 +334,8 @@ async def update_shrine(ctx, slug_raw: Any, body: dict[str, Any], screens: list[
             nxt["operator"] = clean_op_text(body["operator"], OPERATOR_MAX, "운영 표시명", True) or "익명"
         if "status" in body:
             nxt["status"] = _read_status(body["status"])
+        if "gosa" in body:
+            nxt["gosa"] = _read_gosa(body["gosa"])
         if "github" in body or "url" in body:
             now = _links_of(cur)
             links = _read_links_or_throw(body["github"] if "github" in body else now["github"], body["url"] if "url" in body else now["url"])
@@ -343,13 +357,15 @@ async def update_shrine(ctx, slug_raw: Any, body: dict[str, Any], screens: list[
         await s.execute(
             text(
                 """UPDATE shrines SET name = :name, tagline = :tagline, sign = :sign, category = :category, operator = :operator,
-                     status = :status, domain = :domain, url = :url, repo = :repo, screens = :screens, verified_domain = :vd
+                     status = :status, domain = :domain, url = :url, repo = :repo, screens = :screens, verified_domain = :vd,
+                     gosa = :gosa
                    WHERE slug = :slug"""
             ),
             {
                 "name": nxt["name"], "tagline": nxt["tagline"], "sign": nxt["sign"], "category": nxt["category"],
                 "operator": nxt["operator"], "status": nxt["status"], "domain": nxt["domain"], "url": nxt["url"],
-                "repo": nxt["repo"], "screens": json_stringify(nxt["screens"]), "vd": nxt["verifiedDomain"], "slug": cur["slug"],
+                "repo": nxt["repo"], "screens": json_stringify(nxt["screens"]), "vd": nxt["verifiedDomain"], "gosa": nxt["gosa"],
+                "slug": cur["slug"],
             },
         )  # fmt: skip
         if cur["projectId"]:
@@ -366,6 +382,9 @@ async def update_shrine(ctx, slug_raw: Any, body: dict[str, Any], screens: list[
                     "github": lk["github"], "url": lk["url"], "screen": img, "id": cur["projectId"],
                 },
             )  # fmt: skip
+            if "gosa" in changed:
+                # 작성자가 관리 화면에서 보는 값도 같게 (고른 적이 없으면 NULL 그대로 두려고 바뀐 때만)
+                await s.execute(text("UPDATE projects SET gosa = :g WHERE id = :id"), {"g": nxt["gosa"], "id": cur["projectId"]})
     clear_shrine_cache(ctx)
     return {"shrine": nxt, "changed": changed}
 

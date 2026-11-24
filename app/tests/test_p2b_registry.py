@@ -76,7 +76,7 @@ async def test_submit_status_find_manage(ctx):
     assert list(g["project"]) == [
         "id", "status", "name", "tagline", "sign", "category", "github", "url", "email", "emailPublic", "slug",
         "pendingGithub", "pendingUrl", "pendingName", "pendingTagline", "pendingSign", "note", "screen", "pendingScreen",
-        "wantPlot", "wantChannel",
+        "wantPlot", "wantChannel", "gosa",  # gosa 필드 추가
     ]  # fmt: skip
     # 숫자로 온 PIN은 4자리 0채움
     s = await submit(ctx, url="https://pin-num.dev", pin="0042")

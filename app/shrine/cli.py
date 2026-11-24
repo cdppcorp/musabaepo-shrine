@@ -1,7 +1,8 @@
 """운영 명령 (server/cli.ts). 명령 이름 · 인자 · 출력 · 종료 코드는 Node와 같습니다.
 
     uv run python -m shrine.cli [--env-file ../.env] <명령> …
-    uv run python -m shrine.cli add <사당.json | ->      (규칙 검사 후 추가. - 이면 표준 입력. "channel"을 빼면 1번 채널)
+    uv run python -m shrine.cli add <사당.json | ->      (규칙 검사 후 추가. - 이면 표준 입력. "channel"을 빼면 1번 채널,
+                                                        "gosa"(cake · wreath · siru · bugeo)를 빼면 cake)
     uv run python -m shrine.cli schema                  (DB 구조 버전)
   등록소 · 업로드 · 시험용 훅(projects · approve · reject · erase · upload · dev …)은 cli_registry.py,
   사당 · 게시판 · 차단(list · status · remove · move · posts · post-* · blocks · block-ip · unblock)은 cli_ops.py.
@@ -23,7 +24,7 @@ from typing import Any, NoReturn
 from .config import Config, config_or_exit
 from .db.engine import Database, MigrationError
 from .logic.jsnum import JSONParseError, is_number, json_parse, number_to_string
-from .logic.links import validate_shrine
+from .logic.links import GOSA_DEFAULT, validate_shrine
 
 USAGE = (
     "명령: list | add <json|-> | upload <이미지|-> | status <slug> live|check | remove <slug> [사유] | move <slug> <자리> [채널] | "
@@ -76,8 +77,8 @@ async def cmd_add(config: Config, arg: str | None) -> None:
             data = json_parse(raw.decode("utf-8", "replace"))
         except (OSError, JSONParseError) as e:
             fail(f"사당 JSON을 읽지 못했습니다: {e}")
-        # 등록소에서 생긴 칸(저장소 · 이메일 · 접수 번호)은 비워 두면 기본값, 채널을 비우면 1번 채널
-        s: dict[str, Any] = {"repo": "", "email": "", "emailPublic": False, "projectId": 0, "channel": 1}
+        # 등록소에서 생긴 칸(저장소 · 이메일 · 접수 번호)은 비워 두면 기본값, 채널을 비우면 1번 채널, 고사상을 비우면 cake
+        s: dict[str, Any] = {"repo": "", "email": "", "emailPublic": False, "projectId": 0, "channel": 1, "gosa": GOSA_DEFAULT}
         if isinstance(data, dict):
             s.update(data)
         try:

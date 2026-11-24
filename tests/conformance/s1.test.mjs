@@ -268,7 +268,7 @@ await section(async () => {
   x = cli(D1, 'block-ip', '198.51.100.31', '5x')
   ok('CLI 기간 형식 틀림 → 실패', x.status === 1)
   x = cli(D1, 'schema')
-  ok('CLI schema', /v4/.test(x.stdout), x.stdout)
+  ok('CLI schema', /v5/.test(x.stdout), x.stdout) // gosa 필드 추가: Alembic 0002 = v5
 
   console.log('── 9. 기록 · 개인정보')
   r = await aget('log?limit=50')
@@ -414,7 +414,7 @@ await section(async () => {
   // 버전 관리 전 모양 (node: 일부 칸 없음 · user_version 0 · 옛 데이터, py: 빈 DB — driver.seedLegacySchema)
   await D.seedLegacySchema(D6)
   x = cli(D6, 'schema')
-  ok('옛 DB → v4로 올림', x.status === 0 && /버전 v4/.test(x.stdout), x.stdout + x.stderr)
+  ok('옛 DB → v5로 올림', x.status === 0 && /버전 v5/.test(x.stdout), x.stdout + x.stderr) // gosa 필드 추가: Alembic 0002 = v5
   const snaps = D.preMigrateSnapshots(D6)
   await T.okIf('sqlite-legacy', '바꾸기 전 사본', () => snaps.length === 1 && /^shrine-v0-to-v4-/.test(snaps[0]), () => snaps.join(','))
   const cols = await D.tableColumns(D6, 'shrines')
@@ -423,7 +423,7 @@ await section(async () => {
     && (await D.hasTable(D6, 'blocks'))
     && (!D.has('sqlite-legacy') || (await D.sqlGet(D6, "SELECT n FROM clicks WHERE slug = 'old'"))?.n === 7), cols.join(','))
   x = cli(D6, 'schema')
-  ok('두 번째 실행은 그대로 (사본 더 안 뜸)', /버전 v4/.test(x.stdout) && (!D.has('sqlite-legacy') || D.preMigrateSnapshots(D6).length === 1), x.stdout + x.stderr)
+  ok('두 번째 실행은 그대로 (사본 더 안 뜸)', /버전 v5/.test(x.stdout) && (!D.has('sqlite-legacy') || D.preMigrateSnapshots(D6).length === 1), x.stdout + x.stderr) // gosa 필드 추가
   await D.setFutureSchemaVersion(D6)
   x = cli(D6, 'schema')
   ok('더 새 DB면 시작 거부', x.status !== 0 && /더 새 서버가 만든 DB/.test(x.stderr), x.stderr.slice(0, 200))

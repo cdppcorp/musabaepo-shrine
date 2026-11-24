@@ -8,7 +8,7 @@
 | ``all_shrines`` | ``allShrines`` | 검증을 통과한 사당만, ``ORDER BY channel, plot``. 30초 캐시 (CLI가 바꾼 것도 30초 안에 반영) |
 | ``find_shrine`` · ``shrines_in`` | ``findShrine`` · ``shrinesIn`` | 캐시에서 |
 | ``clear_shrine_cache`` | ``clearShrineCache`` | 사당 표를 바꾼 뒤. 트랜잭션 안이면 ``invalidate_after_commit``도 |
-| ``public_shrine`` · ``public_shrines`` | ``publicShrine`` | 키 순서까지 Node와 같음 (url · paid 빼고, email은 공개일 때만) |
+| ``public_shrine`` · ``public_shrines`` | ``publicShrine`` | 키 순서까지 Node와 같음 (url · paid 빼고, email은 공개일 때만). 맨 끝 ``gosa``는 Node 뒤에 더함 |
 | ``taken_plots`` · ``plot_taken`` · ``free_plots_in`` · ``free_plots_by_channel`` | 같은 이름 | 캐시 없이 DB에서 (숨긴 사당의 자리도 찬 것으로) |
 | ``insert_shrine`` | ``insertShrine`` | 규칙 검사 → ``ShrineRuleError``. UNIQUE 위반은 ``sqlalchemy.exc.IntegrityError`` |
 | ``add_candle`` · ``candle_summary`` | ``addCandle`` · ``candleSummary`` | 요약은 15초 캐시, 초를 켜면 비움 |
@@ -41,7 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from .db.engine import Database
 from .logic.jsnum import is_integer, json_stringify
-from .logic.links import free_plots, from_row, is_prayer_key, public_shrine, validate_shrine
+from .logic.links import GOSA_DEFAULT, free_plots, from_row, is_prayer_key, public_shrine, validate_shrine
 from .logic.util import kst_date, kst_week_days, now_ms
 from .logic.world import CHANNELS
 
@@ -237,10 +237,10 @@ async def free_plots_by_channel(target: Any) -> dict[int, list[int]]:
 INSERT_SHRINE = text(
     """INSERT INTO shrines (slug, name, tagline, category, domain, url, operator, keeper, paid, verified_domain,
          verified_business, joined_at, status, prayer, charm, deco, screens, captured_at, channel, plot, repo, email,
-         email_public, project_id, sign)
+         email_public, project_id, sign, gosa)
        VALUES (:slug, :name, :tagline, :category, :domain, :url, :operator, :keeper, :paid, :verified_domain,
          :verified_business, :joined_at, :status, :prayer, :charm, :deco, :screens, :captured_at, :channel, :plot, :repo,
-         :email, :email_public, :project_id, :sign)"""
+         :email, :email_public, :project_id, :sign, :gosa)"""
 )
 
 
@@ -270,6 +270,7 @@ def shrine_params(s: Mapping[str, Any]) -> dict[str, Any]:
         "plot": _int(s["plot"]), "repo": s["repo"], "email": s["email"],
         "email_public": 1 if _truthy(s.get("emailPublic")) else 0, "project_id": _int(s["projectId"]),
         "sign": "" if s.get("sign") is None else s["sign"],
+        "gosa": GOSA_DEFAULT if s.get("gosa") is None else s["gosa"],
     }  # fmt: skip
 
 

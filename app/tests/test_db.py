@@ -16,18 +16,18 @@ from shrine.db.engine import Database
 
 PG_ADMIN = os.environ.get("SHRINE_TEST_PG", "postgresql://postgres:dev@127.0.0.1:55432/postgres")
 
-# Node SQLite 스키마 v4 (db.ts + registry.ts pin_locks)의 칸 순서
+# Node SQLite 스키마 v4 (db.ts + registry.ts pin_locks)의 칸 순서 + 0002 gosa (shrines · projects 맨 끝)
 EXPECTED_COLUMNS = {
     "shrines": [
         "slug", "name", "tagline", "category", "domain", "url", "operator", "keeper", "paid", "verified_domain",
         "verified_business", "joined_at", "status", "prayer", "charm", "deco", "screens", "captured_at", "channel", "plot",
-        "repo", "email", "email_public", "project_id", "sign",
+        "repo", "email", "email_public", "project_id", "sign", "gosa",
     ],
     "projects": [
         "id", "code", "at", "name", "tagline", "category", "github", "url", "email", "email_public", "pin_hash", "nick",
         "status", "note", "slug", "pending_github", "pending_url", "repo_ok", "stars", "sign", "screen", "pending_screen",
         "want_plot", "pending_name", "pending_tagline", "pending_sign", "consent_at", "review_at", "closed_at", "purged_at",
-        "want_channel",
+        "want_channel", "gosa",
     ],
     "candles": ["day", "slug", "prayer", "n"],
     "ai_prayers": ["day", "ai", "n"],
@@ -90,7 +90,7 @@ async def test_schema_matches_node(db: Database):
             ).all()
         }
         assert {"uq_shrines_channel_plot", "uq_shrines_domain", "uq_projects_code", "ck_shrines_status",
-                "ck_projects_status", "ck_blocks_kind"} <= constraints
+                "ck_projects_status", "ck_blocks_kind", "ck_shrines_gosa"} <= constraints
         indexes = {r[0] for r in (await conn.execute(text("SELECT indexname FROM pg_indexes WHERE schemaname = 'public'"))).all()}
         assert {"posts_at", "blocks_until"} <= indexes
 

@@ -7,6 +7,8 @@ Node(SQLite)와 맞춘 것:
   · ms 시각(at, *_at, until)은 BIGINT. SQLite INTEGER(64비트) 그대로의 범위입니다.
   · AUTOINCREMENT 번호는 IDENTITY(BY DEFAULT). 지운 번호를 다시 쓰지 않는 점이 같습니다.
   · v4 채널별 사당: shrines.channel(기본 1) + UNIQUE(channel, plot), projects.want_channel(NULL = 아무 채널).
+  · 0002 (Python 서버 뒤): 새로 연 사당 앞 고사상 물건. shrines.gosa(기본 'cake', CHECK ck_shrines_gosa) ·
+    projects.gosa(작성자가 고른 것, NULL = 기본). 키는 logic/links.py GOSA_KEYS.
 PostgreSQL 예약어와 겹치는 칸 이름은 없습니다 (at, day, until, text, domain, operator, action, kind, code는 모두
 비예약 키워드라 따옴표 없이 쓸 수 있음). 손으로 쓰는 SQL에서는 그래도 칸 이름을 따옴표로 감싸는 편이 안전합니다.
 """
@@ -48,6 +50,7 @@ class Shrine(Base):
     __table_args__ = (
         CheckConstraint("status IN ('live', 'check')", name="status"),
         UniqueConstraint("channel", "plot"),
+        CheckConstraint("gosa IN ('cake', 'wreath', 'siru', 'bugeo')", name="gosa"),
     )
 
     slug: Mapped[str] = mapped_column(Text, primary_key=True)
@@ -82,6 +85,8 @@ class Shrine(Base):
     #: 어느 접수에서 왔는지 (색인 · 외래 키 없음, Node와 같음)
     project_id: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
     sign: Mapped[str] = _text("")
+    #: 고사상 물건 (logic/links.py GOSA_KEYS). 화면은 새로 연 사당(첫 주, isNew)에만 그립니다
+    gosa: Mapped[str] = _text("cake")
 
 
 class Candle(Base):
@@ -170,6 +175,8 @@ class Project(Base):
     purged_at: Mapped[int | None] = _ms(nullable=True)
     #: 등록할 때 고른 채널 (NULL = 아무 채널, db.ts v4)
     want_channel: Mapped[int | None] = _int(nullable=True)
+    #: 작성자가 고른 고사상 물건 (NULL = 고르지 않음 → 사당은 기본 'cake'). 검토 없이 바로 반영
+    gosa: Mapped[str | None] = _text(nullable=True)
 
 
 class Click(Base):

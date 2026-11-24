@@ -42,7 +42,7 @@ async def test_add_shrine_defaults_and_key_order(ctx):
     assert list(sh) == [
         "slug", "name", "tagline", "category", "domain", "url", "operator", "keeper", "paid", "verifiedDomain",
         "verifiedBusiness", "joinedAt", "status", "prayer", "charm", "deco", "screens", "capturedAt", "channel", "plot", "repo",
-        "email", "emailPublic", "projectId", "sign",
+        "email", "emailPublic", "projectId", "sign", "gosa",  # gosa 필드 추가
     ]  # fmt: skip
     assert sh["slug"] == "ops-shrine-example-com"  # GitHub가 없으면 이름(한글 → '') 다음 도메인으로
     assert (sh["channel"], sh["plot"], sh["operator"], sh["prayer"], sh["status"]) == (1, 0, "익명", "deploy", "live")

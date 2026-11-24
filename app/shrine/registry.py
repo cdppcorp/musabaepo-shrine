@@ -56,8 +56,10 @@ from .logic.jsnum import is_integer, json_stringify, number_to_string
 from .logic.jsstr import JS_WS, js_trim, slice_units, utf8_encode
 from .logic.links import (
     CATEGORY_KEYS,
+    GOSA_DEFAULT,
     clean_email,
     domain_of,
+    is_gosa_key,
     normalize_service_url,
     parse_github,
     read_links,
@@ -212,6 +214,15 @@ def _nz(v: Any, d: Any) -> Any:
     return d if v is None else v
 
 
+def read_gosa(raw: Any) -> dict:
+    """작성자가 고른 고사상 물건: 없음(None · '') → {ok, gosa: None}(기본 'cake'), 아는 키 → 그 키, 그 밖 → 400 gosa."""
+    if raw is None or (isinstance(raw, str) and raw == ""):
+        return {"ok": True, "gosa": None}
+    if is_gosa_key(raw):
+        return {"ok": True, "gosa": raw}
+    return fail(400, "gosa")
+
+
 def view(r: dict) -> dict[str, Any]:
     """지금 반영된 값 + 검토를 기다리는 값. PIN 해시 · 접수 코드 · 닉네임은 빼고."""
     return {
@@ -222,6 +233,8 @@ def view(r: dict) -> dict[str, Any]:
         "pendingName": r["pending_name"], "pendingTagline": r["pending_tagline"], "pendingSign": r["pending_sign"],
         "note": r["note"], "screen": _nz(r["screen"], ""), "pendingScreen": r["pending_screen"], "wantPlot": r["want_plot"],
         "wantChannel": wish_channel(r),
+        # 고른 고사상 물건 (Node 뒤에 더함). None = 고르지 않음 (사당은 기본 'cake')
+        "gosa": r.get("gosa"),
     }  # fmt: skip
 
 
@@ -688,9 +701,9 @@ def _constraint(e: IntegrityError) -> str:
 
 INSERT_PROJECT = text(
     """INSERT INTO projects (code, at, name, tagline, sign, category, github, url, email, email_public, pin_hash, nick,
-         repo_ok, stars, screen, want_plot, want_channel, consent_at, review_at)
+         repo_ok, stars, screen, want_plot, want_channel, consent_at, review_at, gosa)
        VALUES (:code, :at, :name, :tagline, :sign, :category, :github, :url, :email, :email_public, :pin_hash, :nick,
-         :repo_ok, :stars, :screen, :want_plot, :want_channel, :consent_at, :review_at)
+         :repo_ok, :stars, :screen, :want_plot, :want_channel, :consent_at, :review_at, :gosa)
        RETURNING id"""
 )
 
@@ -717,6 +730,9 @@ async def submit_project(ctx, body: dict, sid: str, ip_key: str, nick: str) -> d
     category = body.get("category")
     if not isinstance(category, str) or category not in CATEGORY_KEYS:
         return fail(400, "category")
+    gosa = read_gosa(body.get("gosa"))
+    if not gosa["ok"]:
+        return gosa
     links = read_links(body.get("github"), body.get("url"))
     if not links["ok"]:
         return links
@@ -781,6 +797,7 @@ async def submit_project(ctx, body: dict, sid: str, ip_key: str, nick: str) -> d
                                     "email_public": 1 if body.get("emailPublic") is True else 0, "pin_hash": pin_hash,
                                     "nick": slice_units(nick, 0, 20), "repo_ok": repo_ok, "stars": stars, "screen": screen,
                                     "want_plot": want["plot"], "want_channel": want["channel"], "consent_at": now, "review_at": now,
+                                    "gosa": gosa["gosa"],
                                 },  # fmt: skip
                             )
                         ).scalar_one()
@@ -870,6 +887,12 @@ async def _plan_save(ctx, s: AsyncSession, row: dict, body: dict, sid: str, gith
         if not isinstance(c, str) or c not in CATEGORY_KEYS:
             return fail(400, "category")
         nxt["category"] = c
+    # 고사상: 정해진 목록에서 고르는 것이라 맵에 있어도 검토 없이 바로 (manage_save가 사당에도 씀)
+    if "gosa" in body:
+        g = read_gosa(body["gosa"])
+        if not g["ok"]:
+            return g
+        nxt["gosa"] = g["gosa"]
     # 채널 · 자리는 맵에 오르기 전에만. 한쪽만 보내면 다른 쪽은 지금 값으로 봅니다
     if ("plot" in body or "channel" in body) and not live:
         v = await read_want(
@@ -969,14 +992,15 @@ UPDATE_PROJECT = text(
          email_public = :email_public, pin_hash = :pin_hash, github = :github, url = :url, pending_github = :pending_github,
          pending_url = :pending_url, note = :note, status = :status, repo_ok = :repo_ok, stars = :stars, screen = :screen,
          pending_screen = :pending_screen, want_plot = :want_plot, want_channel = :want_channel, pending_name = :pending_name,
-         pending_tagline = :pending_tagline, pending_sign = :pending_sign, review_at = :review_at, closed_at = :closed_at
+         pending_tagline = :pending_tagline, pending_sign = :pending_sign, review_at = :review_at, closed_at = :closed_at,
+         gosa = :gosa
        WHERE id = :id"""
 )
 
 _SAVE_COLUMNS = (
     "name", "tagline", "sign", "category", "email", "email_public", "pin_hash", "github", "url", "pending_github",
     "pending_url", "note", "status", "repo_ok", "stars", "screen", "pending_screen", "want_plot", "want_channel",
-    "pending_name", "pending_tagline", "pending_sign", "review_at", "closed_at",
+    "pending_name", "pending_tagline", "pending_sign", "review_at", "closed_at", "gosa",
 )  # fmt: skip
 
 
@@ -1033,6 +1057,11 @@ async def manage_save(ctx, body: dict, ip_key: str, sid: str = "") -> dict:
                 text("UPDATE shrines SET category = :c, email = :e, email_public = :p WHERE project_id = :id"),
                 {"c": nxt["category"], "e": nxt["email"], "p": nxt["email_public"], "id": row["id"]},
             )
+            if "gosa" in body:
+                # 고사상도 바로 (보낸 때만: 운영자가 바꾼 값을 다른 칸 고치기로 덮지 않게)
+                await s.execute(
+                    text("UPDATE shrines SET gosa = :g WHERE project_id = :id"), {"g": nxt["gosa"] or GOSA_DEFAULT, "id": row["id"]}
+                )
         if live:
             invalidate_after_commit(s, ctx)
         saved = await _get_row(s, row["id"]) or nxt
@@ -1214,6 +1243,7 @@ async def _approve(s: AsyncSession, pid: int, plot_arg: int | None, channel_arg:
             "prayer": "deploy", "charm": None, "deco": [], "screens": [f"up/{row['screen']}"] if row["screen"] else [],
             "capturedAt": today, "channel": ch, "plot": pl, "repo": links["github"], "email": row["email"],
             "emailPublic": row["email_public"] == 1, "projectId": row["id"], "sign": _nz(row["sign"], ""),
+            "gosa": row["gosa"] if is_gosa_key(row.get("gosa")) else GOSA_DEFAULT,
         }  # fmt: skip
         errors = validate_shrine(shrine)
         if errors:

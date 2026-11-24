@@ -3,6 +3,7 @@
 | 함수 · 상수 | 원본 |
 |---|---|
 | ``PRAYER_KEYS`` · ``CHARM_KEYS`` · ``DECO_KEYS`` · ``CATEGORY_KEYS`` · ``is_prayer_key`` | shrines.ts:10-17 |
+| ``GOSA_KEYS`` · ``GOSA_DEFAULT`` · ``is_gosa_key`` | (Node 뒤에 더함) 새로 연 사당 앞 고사상 물건 |
 | ``SLUG_RE`` · ``DOMAIN_RE`` · ``DATE_RE`` · ``SCREEN_RE`` · ``UPLOAD_SCREEN_RE`` | shrines.ts:54-59 |
 | ``chars`` · ``GITHUB_OWNER`` · ``GITHUB_REPO`` · ``EMAIL_RE`` | shrines.ts:61-64 |
 | ``parse_github`` | shrines.ts:67-85 ``parseGithub`` |
@@ -41,6 +42,8 @@ __all__ = [
     "CATEGORY_KEYS",
     "CHARM_KEYS",
     "DECO_KEYS",
+    "GOSA_DEFAULT",
+    "GOSA_KEYS",
     "PRAYER_KEYS",
     "chars",
     "clean_email",
@@ -48,6 +51,7 @@ __all__ = [
     "from_row",
     "is_allowed_service_url",
     "is_github_domain",
+    "is_gosa_key",
     "is_prayer_key",
     "is_safe_shrine_url",
     "is_valid_email",
@@ -65,10 +69,19 @@ PRAYER_KEYS: tuple[str, ...] = ("deploy", "security", "success", "bug", "payment
 CHARM_KEYS: tuple[str, ...] = ("zero-downtime", "no-rollback", "no-cve", "no-friday", "prod-db", "no-404")
 DECO_KEYS: tuple[str, ...] = ("duck", "coffee", "makgeolli", "cat", "cactus")
 CATEGORY_KEYS: tuple[str, ...] = ("business", "productivity", "commerce", "education", "devtools", "content", "life", "etc")
+#: 새로 연 사당(첫 주, isNew) 앞에 놓는 고사상 물건 (예전 돼지머리 대신). 사당 주인이 등록소에서 고르고 운영자가 바꿀 수 있습니다.
+#: 축하 케이크 · 개업 화환 · 시루떡 · 북어와 실타래. 화면(public/)도 같은 키를 씁니다.
+#: DB CHECK(alembic 0002 ck_shrines_gosa)와 같아야 하므로 키를 바꾸려면 새 리비전을 함께 만듭니다.
+GOSA_KEYS: tuple[str, ...] = ("cake", "wreath", "siru", "bugeo")
+GOSA_DEFAULT = "cake"
 
 
 def is_prayer_key(v: object) -> bool:
     return isinstance(v, str) and v in PRAYER_KEYS
+
+
+def is_gosa_key(v: object) -> bool:
+    return isinstance(v, str) and v in GOSA_KEYS
 
 
 SLUG_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?")
@@ -221,6 +234,9 @@ def validate_shrine(s: Mapping[str, Any]) -> list[str]:
         e.append("부적")
     if len(s["deco"]) > 3 or any(d not in DECO_KEYS for d in s["deco"]):
         e.append("소품 최대 3개")
+    # 고사상 (Node 뒤에 더함): 없으면(None) 기본 'cake'
+    if s.get("gosa") is not None and not is_gosa_key(s["gosa"]):
+        e.append("고사상")
 
     def ok_screen(f: str) -> bool:
         return _full(SCREEN_RE, f) or _full(UPLOAD_SCREEN_RE, f)
@@ -258,7 +274,7 @@ def from_row(r: Mapping[str, Any]) -> dict[str, Any]:
         "charm": r["charm"], "deco": _list(r["deco"]), "screens": _list(r["screens"]), "capturedAt": r["captured_at"],
         "channel": nz("channel", 1), "plot": r["plot"],
         "repo": nz("repo", ""), "email": nz("email", ""), "emailPublic": r.get("email_public") == 1, "projectId": nz("project_id", 0),
-        "sign": nz("sign", ""),
+        "sign": nz("sign", ""), "gosa": nz("gosa", GOSA_DEFAULT),
     }  # fmt: skip
 
 
@@ -279,6 +295,8 @@ def public_shrine(s: Mapping[str, Any], now: int | None = None) -> dict[str, Any
         "charm": s["charm"], "deco": s["deco"], "screens": s["screens"], "capturedAt": s["capturedAt"], "channel": s["channel"],
         "plot": s["plot"],
         "isNew": (not math.isnan(days)) and 0 <= days < 7,
+        # 고사상 물건 (Node 뒤에 더함, 맨 끝): 화면은 isNew일 때 그립니다
+        "gosa": s.get("gosa") or GOSA_DEFAULT,
     })  # fmt: skip
     return out
 

@@ -1,6 +1,6 @@
 // 운영자 화면 (로그인한 세션에만 내려갑니다). 서버가 준 값은 모두 textContent · 속성으로만 넣고 innerHTML은 쓰지 않습니다.
 // 화면: 대시보드 · 접속자 · 접수 · 사당 · 게시판 · 설정 · 기록. 주소 뒤 #으로 화면을 고릅니다 (#projects?f=pending&id=3).
-import { CATEGORIES, PRAYERS } from '../js/data.js'
+import { CATEGORIES, GOSA, PRAYERS, gosaKey } from '../js/data.js'
 import { bakeFloor } from '../js/pixels.js'
 
 const BASE = document.querySelector('meta[name="shrine-base"]')?.content ?? ''
@@ -30,10 +30,11 @@ const REASONS = {
   slow: '이미지를 너무 자주 올렸습니다. 잠시 뒤에 해 주세요', many: '오늘 올릴 수 있는 이미지 수를 넘었습니다',
   full: '이미지 저장 공간이 꽉 찼습니다', net: '서버에 닿지 않습니다',
   gone: '그 사람은 이미 나갔습니다. 신고 목록에 있으면 거기서 차단할 수 있습니다',
+  gosa: '입점 첫 주 고사 상을 다시 고르세요',
 }
 const FIELD_LABEL = {
   name: '이름', tagline: '한 줄 소개', sign: '지붕 소개', category: '분류', operator: '운영 표시명',
-  status: '상태', domain: '도메인', url: '대표 링크', repo: 'GitHub', screens: '이미지',
+  status: '상태', domain: '도메인', url: '대표 링크', repo: 'GitHub', screens: '이미지', gosa: '고사 상',
 }
 
 /* ── 작은 도구 ── */
@@ -188,6 +189,9 @@ function toggle(name, label, checked) {
 
 const categoryOptions = () => Object.entries(CATEGORIES)
 const prayerOptions = () => PRAYERS.map(p => [p.key, p.label])
+/** 입점 첫 주 고사 상 (첫 번째가 기본) */
+const gosaOptions = () => Object.entries(GOSA)
+const GOSA_HELP = '입점 첫 주 동안 사당 앞에 놓입니다'
 
 /** 버튼을 누르는 동안 다시 못 누르게 */
 async function busy(btn, fn) {
@@ -619,6 +623,7 @@ async function projectDetail(id, freePlots, filter) {
       ['한 줄 소개', p.tagline],
       ['지붕 소개', p.sign || '-'],
       ['분류', CATEGORIES[p.category] ?? p.category],
+      ['고사 상', GOSA[gosaKey(p.gosa)], p.gosa == null ? '(기본)' : ''],
       ['GitHub', extLink(p.github), p.github ? (p.repoOk ? `공개 저장소 확인 · 별 ${fmtN(p.stars)}` : '확인 못 함') : ''],
       ['서비스 주소', extLink(p.url)],
       ['이메일', p.email || '-', p.purgedAt ? '' : p.emailPublic ? '(사당에 공개)' : '(비공개)'],
@@ -783,6 +788,7 @@ function addForm(W, free, names) {
       field('서비스 주소', input('url', { placeholder: 'https://my-service.com' }), { full: true, help: 'GitHub 저장소와 둘 중 하나는 꼭' }),
       field('GitHub 저장소', input('github', { placeholder: 'https://github.com/이름/저장소' }), { full: true, optional: true }),
       field('현판 기원', select('prayer', prayerOptions(), 'deploy')),
+      field('고사 상', select('gosa', gosaOptions(), 'cake'), { help: GOSA_HELP }),
       field('상태', select('status', [['live', '운영 중'], ['check', '닫힘 · 점검 중']], 'live')),
       field('이메일', input('email', { type: 'email', max: 80, placeholder: 'me@example.com' }), { optional: true }),
       field('주소 이름 (slug)', input('slug', { max: 40, placeholder: '비우면 자동' }), { optional: true }),
@@ -818,7 +824,7 @@ function editForm(W, s, free, names) {
   const serviceUrl = s.domain.startsWith('github.com/') ? '' : s.url
   const initial = {
     name: s.name, tagline: s.tagline, sign: s.sign, category: s.category, operator: s.operator,
-    url: serviceUrl, github: s.repo, status: s.status,
+    url: serviceUrl, github: s.repo, status: s.status, gosa: gosaKey(s.gosa),
   }
   const save = h('button', { class: 'btn btn-main', type: 'submit' }, '고친 내용 저장')
   const form = h('form', { class: 'shrine-form', novalidate: true },
@@ -831,6 +837,7 @@ function editForm(W, s, free, names) {
       field('서비스 주소', input('url', { value: serviceUrl, placeholder: 'https://my-service.com' }), { full: true, optional: true }),
       field('GitHub 저장소', input('github', { value: s.repo, placeholder: 'https://github.com/이름/저장소' }), { full: true, optional: true }),
       field('상태', select('status', [['live', '운영 중'], ['check', '닫힘 · 점검 중']], s.status), { help: '닫으면 맵에 점검 중으로 보이고 서비스 가보기가 막힙니다' }),
+      field('고사 상', select('gosa', gosaOptions(), gosaKey(s.gosa)), { help: GOSA_HELP }),
       h('div', { class: 'rf full' }, h('span', { class: 'rf-label' }, '이미지'), image),
     ),
     h('div', { class: 'form-foot' }, h('p', { class: 'form-msg', role: 'status', 'aria-live': 'polite' }), save),

@@ -2,7 +2,8 @@
 // 입장(캐릭터 꾸미기 · 사람 확인) → 화면 가득 찬 맵(걷기 · 실시간) → 사당 앞에서 반투명 창(초 켜기 · 서비스 가보기).
 // 사용자 입력이나 서버 데이터는 textContent / DOM API로만 넣습니다 (HTML 문자열 금지).
 import { DEFAULT_LOOK, LOOK_SIZES, PARTS, drawAvatar, optionsOf, randomLook, validLook } from './avatar.js'
-import { AI_BLESS, BUBBLES, BUBBLE_GROUPS, CATEGORIES, CHARMS, EMOTES, FORTUNES, PRAYERS, SIGHS, TOPIC_ETC } from './data.js'
+import { AI_BLESS, BUBBLES, BUBBLE_GROUPS, CATEGORIES, CHARMS, EMOTES, FORTUNES, GOSA, PRAYERS, SIGHS, TOPIC_ETC, gosaKey } from './data.js'
+import { GOSA_PREVIEW, paintGosaPreview } from './gosa-art.js'
 import { bakeFloor, buildFront, drawBoard, drawGlow, drawEmptyPlot, drawFloor, drawFortune, drawProp, drawShrine, drawStrings, propBox, rect, shrink } from './pixels.js'
 import { CENSER_BOX, TEMPLE_BOX, drawCenser, drawTemple } from './temple.js'
 // 새 그림(AI 신당 · 게시판 · 등록소 · 흡연구역)은 이름표만 있어도 돌아가게 묶음으로 가져옵니다
@@ -2495,6 +2496,7 @@ const REG_FAIL = {
   plot: '그 채널의 그 자리에는 이미 사당이 있어요. 다른 자리나 채널을 골라 주세요.',
   channel: '채널을 다시 골라 주세요.',
   consent: '개인정보 수집 · 이용에 동의해야 접수할 수 있어요.',
+  gosa: '입점 첫 주 고사 상을 다시 골라 주세요.',
   blocked: '이용이 제한된 상태라 접수할 수 없어요. 문의는 화면 아래 연락처로 보내 주세요.',
   busy: '지금 올리는 사람이 많아요. 잠시 뒤 다시 해 주세요.',
   full: '저장 공간이 부족해 지금은 받을 수 없어요. 잠시 뒤 다시 해 주세요.',
@@ -2508,7 +2510,7 @@ const IMG_FAIL = {
 }
 const IMG_MAX = 5 * 1024 * 1024
 /** 서버가 돌려준 까닭 → 오류를 띄울 칸 */
-const REG_FIELD = { plot: 'plot', channel: 'plot', image: 'image', name: 'name', tagline: 'tagline', sign: 'sign', category: 'category', link: 'github', github: 'github', url: 'url', email: 'email', pin: 'pin', dup: 'github', consent: 'consent' }
+const REG_FIELD = { plot: 'plot', channel: 'plot', image: 'image', name: 'name', tagline: 'tagline', sign: 'sign', category: 'category', link: 'github', github: 'github', url: 'url', email: 'email', pin: 'pin', dup: 'github', consent: 'consent', gosa: 'gosa' }
 const STATUS_LABEL = { pending: '검토 중', approved: '맵에 올라감', rejected: '반려', withdrawn: '내림' }
 const MY_PROJECTS = 'shrine-my-projects'
 const reg = { tab: 'new' }
@@ -2616,6 +2618,7 @@ function projectFields(form, p = {}) {
       regField('sign', '사당 소개', regInput('sign', { max: 8, value: p.sign, placeholder: '배포 지킴이 봇' }), { count: true, help: '공백 포함 8자까지. 사당 지붕 위에 늘 떠 있어요' }),
       regField('tagline', '한 줄 소개', regInput('tagline', { max: 40, value: p.tagline, placeholder: '배포 전에 체크리스트를 챙겨 주는 봇' }), { full: true, count: true, help: '공백 포함 40자까지. 사당 창 맨 위에 보여요' }),
       imageField(form, p),
+      gosaField(p),
     ),
     ...(p.status === 'approved' ? [] : [group('채널 · 자리', '사당은 고른 채널에서만 보여요', plotPicker(form, p))]),
     group('링크', '둘 중 하나는 꼭',
@@ -2627,6 +2630,40 @@ function projectFields(form, p = {}) {
       toggle,
     ),
   )
+}
+
+let gosaSeq = 0
+/**
+ * 입점 첫 주 고사 상 고르기: 그림이 든 라디오 넷 (기본 축하 케이크). 진짜 라디오라 Tab으로 들어와 화살표로 고르고,
+ * 고른 값은 폼의 gosa로 읽습니다 (readProject). 그림은 부스에 그리는 것과 같은 도트를 작은 캔버스에 (gosa-art.js)
+ */
+function gosaField(p = {}) {
+  const wrap = el('div', 'rf full')
+  wrap.dataset.name = 'gosa'
+  const head = el('span', 'rf-label', '입점 첫 주 고사 상')
+  head.id = `regGosa${++gosaSeq}`
+  const group = el('div', 'rgosa')
+  group.setAttribute('role', 'radiogroup')
+  group.setAttribute('aria-labelledby', head.id)
+  const now = gosaKey(p.gosa)
+  for (const [k, label] of Object.entries(GOSA)) {
+    const opt = el('label', 'rgosa-opt')
+    const radio = document.createElement('input')
+    radio.type = 'radio'
+    radio.name = 'gosa'
+    radio.value = k
+    radio.checked = k === now
+    radio.addEventListener('change', () => wrap.classList.remove('bad'))
+    const cv = document.createElement('canvas')
+    cv.width = GOSA_PREVIEW.w
+    cv.height = GOSA_PREVIEW.h
+    cv.setAttribute('aria-hidden', 'true')
+    paintGosaPreview(cv.getContext('2d'), k)
+    opt.append(radio, cv, el('span', null, label))
+    group.append(opt)
+  }
+  wrap.append(head, group, el('small', 'rf-help', '맵에 올라간 첫 주 동안 사당 앞에 놓여요. 나중에 관리하기에서 바꿀 수 있어요'), el('small', 'rf-err'))
+  return wrap
 }
 
 /** 자리 묶음 이름 */
@@ -2828,7 +2865,7 @@ function readProject(form) {
   const v = k => String(f.get(k) ?? '').trim()
   return {
     name: v('name'), tagline: v('tagline'), sign: v('sign'), category: v('category'), github: v('github'), url: v('url'),
-    email: v('email'), emailPublic: f.get('emailPublic') === 'on',
+    email: v('email'), emailPublic: f.get('emailPublic') === 'on', gosa: gosaKey(v('gosa')),
   }
 }
 
@@ -3097,7 +3134,14 @@ function showEditor(area, id, pin, p) {
     } else if (form.imageCleared) data.screen = ''
     const r = await regApi('/api/manage/save', { id, pin, ...data, ...(newPin ? { newPin } : {}), ...(p.status === 'approved' ? {} : { plot: form.wantPlot ?? null, channel: form.wantChannel ?? null }) })
     if (!r.ok) return showFieldError(form, r.reason)
-    toast(r.linkReview ? '저장했어요. 바뀐 링크는 확인 뒤 반영돼요.' : '저장했어요.')
+    // 맵에 있는 사당의 고사 상은 서버가 바로 바꿉니다. 내 화면의 맵도 바로 (다른 사람은 다시 들어오면)
+    const gosaNow = p.status === 'approved' && data.gosa !== gosaKey(p.gosa)
+    if (gosaNow) {
+      const mine = p.slug ? st.allShrines.find(s => s.slug === p.slug) : null
+      if (mine) mine.gosa = data.gosa
+    }
+    const saved = r.linkReview ? '저장했어요. 바뀐 링크는 확인 뒤 반영돼요.' : '저장했어요.'
+    toast(gosaNow ? `${saved} 고사 상을 바꿨어요.` : saved)
     showEditor(area, id, newPin || pin, r.project ?? p)
   })
   drop.addEventListener('click', async () => {

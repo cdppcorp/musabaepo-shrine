@@ -52,6 +52,11 @@ export const CATEGORIES = {
   devtools: '개발 도구', content: '콘텐츠', life: '생활', etc: '기타',
 }
 
+/** 입점 첫 주 고사 상 (사당 주인이 등록소에서 고름). 서버 gosa 값과 같은 키, 첫 번째가 기본 */
+export const GOSA = { cake: '축하 케이크', wreath: '개업 화환', siru: '시루떡', bugeo: '북어 · 실타래' }
+/** 서버가 아직 주지 않았거나(빈 값) 모르는 값이면 기본(축하 케이크) */
+export const gosaKey = v => (typeof v === 'string' && Object.hasOwn(GOSA, v) ? v : 'cake')
+
 export const CHARMS = {
   'zero-downtime': '무중단 배포', 'no-rollback': '롤백 불필요', 'no-cve': 'CVE 접근금지',
   'no-friday': '금요일 배포 면제', 'prod-db': '프로덕션 DB 보호', 'no-404': '404 퇴치',

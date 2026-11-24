@@ -1,4 +1,6 @@
 // 도트 그리기. 좌표는 맵 픽셀(도트 1칸 = 1px). 정식 에셋(P0)이 나오면 이 파일을 바꿉니다.
+import { gosaKey } from './data.js'
+import { gosaFront, gosaMap } from './gosa-art.js'
 
 export function rect(c, x, y, w, h, color) {
   c.fillStyle = color
@@ -754,10 +756,8 @@ export function drawShrine(c, plot, s, tier, t, mini) {
   if (s.keeper) R(-2, 1, 4, 4, '#f0a64a')
   candleTop(c, cx - 11, top, live ? tier : -1, t, 350)
   candleTop(c, cx + 9, top, live ? tier : -1, t, 430)
-  if (s.isNew) {
-    // 입점 첫 주: 돼지머리 고사
-    R(-4, 32, 2, 2, '#e48c8c'); R(2, 32, 2, 2, '#e48c8c'); R(-3, 33, 6, 5, '#f3aaa8'); R(-1, 35, 2, 1, '#8f4545')
-  }
+  // 입점 첫 주: 사당 주인이 고른 고사 상
+  if (s.isNew) gosaMap(R, s.gosa)
 }
 
 /** 빈 자리 천막 색 (자리 번호마다 돌아가며) */
@@ -867,12 +867,8 @@ function frontShapes(o) {
   if (o.deco.includes('duck')) { r(19, 33, 5, 3, '#f6cf3a'); r(22, 30, 3, 3, '#f6cf3a'); r(25, 31, 1, 1, '#f08a24'); r(23, 31, 1, 1, '#1b1b1b') }
   if (o.deco.includes('coffee')) { r(47, 33, 3, 3, '#e9edf3'); r(50, 34, 1, 1, '#e9edf3'); r(47, 33, 3, 1, '#5b3a24'); r(48, 31, 1, 1, '#c7ced9', 'blink') }
   if (o.deco.includes('makgeolli')) { r(58, 25, 2, 2, '#1d6a3b'); r(57, 27, 4, 9, '#2f9e5a'); r(57, 30, 4, 3, '#eef6ef') }
-  if (o.gosa) {
-    r(22, 54, 36, 2, '#7a3b1e'); r(24, 56, 2, 3, '#5e2c15'); r(54, 56, 2, 3, '#5e2c15')
-    r(33, 46, 3, 3, '#e48c8c'); r(42, 46, 3, 3, '#e48c8c'); r(34, 47, 10, 7, '#f3aaa8'); r(37, 50, 4, 3, '#e48c8c')
-    r(38, 51, 1, 1, '#8f4545'); r(40, 51, 1, 1, '#8f4545'); r(35, 49, 2, 1, '#5a2b2b'); r(41, 49, 2, 1, '#5a2b2b')
-    r(47, 50, 8, 4, '#efe3c9'); r(47, 51, 8, 1, '#a3613d'); r(47, 53, 8, 1, '#a3613d')
-  }
+  // 입점 첫 주 고사 상 (케이크 촛불은 켜진 사당만, 정면 초처럼 깜빡임)
+  if (o.gosa) gosaFront(r, o.gosa, o.flame !== 'off')
   return s
 }
 
@@ -900,7 +896,7 @@ export function buildFront(s, tier) {
   const NS = 'http://www.w3.org/2000/svg'
   const live = s.status === 'live'
   const flame = !live ? 'off' : tier === 2 ? 'big' : tier === 1 ? 'mid' : 'small'
-  const shapes = frontShapes({ flame, screen: live ? 'image' : 'check', deco: s.deco, charm: !!s.charm, gosa: !!s.isNew })
+  const shapes = frontShapes({ flame, screen: live ? 'image' : 'check', deco: s.deco, charm: !!s.charm, gosa: s.isNew ? gosaKey(s.gosa) : null })
   const svg = document.createElementNS(NS, 'svg')
   svg.setAttribute('viewBox', '0 0 80 60')
   svg.setAttribute('shape-rendering', 'crispEdges')

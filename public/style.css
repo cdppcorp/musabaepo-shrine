@@ -369,6 +369,23 @@ body.typing .pad { display: none; }
 .rf-image-tools { display: flex; gap: 6px; flex-wrap: wrap; }
 .rf-image-tools .btn { height: 36px; font-size: 13px; }
 .rf-file { display: none; }
+/* 입점 첫 주 고사 상: 그림이 든 라디오 넷 (좁으면 두 줄) */
+.rgosa { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.rgosa-opt {
+  position: relative; display: grid; justify-items: center; gap: 4px; padding: 8px 4px 7px; border-radius: 10px; cursor: pointer;
+  border: 1px solid rgb(255 255 255 / .16); background: #17233f; color: var(--ink-sub);
+  font-size: 12px; font-weight: 600; line-height: 1.3; text-align: center; word-break: keep-all;
+  transition: border-color .15s, background .15s;
+}
+.rgosa-opt:hover { border-color: rgb(255 255 255 / .34); color: var(--ink); }
+.rf .rgosa-opt input { position: absolute; top: 0; left: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; }
+.rgosa-opt canvas { width: 52px; height: 58px; border-radius: 6px; image-rendering: pixelated; }
+.rgosa-opt:has(input:checked) { border-color: var(--amber); background: rgb(240 166 74 / .14); color: var(--ink); box-shadow: inset 0 0 0 1px var(--amber); }
+.rgosa-opt:has(input:focus-visible) { outline: 2px solid #fff; outline-offset: 2px; }
+.rf.bad .rgosa-opt { border-color: #ff8a7a; }
+@media (max-width: 420px) {
+  .rgosa { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 .rf-switch { display: flex; align-items: center; gap: 10px; align-self: end; height: 42px; font-size: 13px; font-weight: 600; color: var(--ink-sub); cursor: pointer; }
 .rf-switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 .rf-switch .track { position: relative; flex: none; width: 38px; height: 22px; border-radius: 999px; background: rgb(255 255 255 / .16); transition: background .15s; }

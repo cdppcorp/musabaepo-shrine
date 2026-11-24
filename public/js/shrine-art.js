@@ -3,6 +3,8 @@
 //   부스 가운데에 사이트 화면(32×18 맵 px = 64×36 그림 px)을 크게 걸어, 도트로나마 어떤 사이트인지 보이게 합니다.
 //   움직이지 않는 부분은 사당마다 한 번 그려 두고(화면이 늦게 불러와지면 다시), 초 불꽃 · 불빛만 매번 그립니다.
 import { drawGlow, rect } from './pixels.js'
+import { gosaKey } from './data.js'
+import { gosaFlameAt, gosaFlameHD, paintGosaHD } from './gosa-art.js'
 
 /** 사이트 화면 크기 (그림 px). 맵에서는 32×18. main.js는 shrink(img, ...SCREEN_ART)로 만들어 넘깁니다 */
 export const SCREEN_ART = [64, 36]
@@ -372,14 +374,8 @@ function paintBooth(c, s, screen) {
   const deco = Array.isArray(s.deco) ? s.deco : []
   const slots = [[16, 100], [76, 100], [28, 100], [66, 100]]
   deco.slice(0, 4).forEach((k, i) => DECO[k]?.(c, slots[i][0], slots[i][1]))
-  // 입점 첫 주: 돼지머리 고사 (마루 앞 가운데)
-  if (s.isNew) {
-    R(42, 104, 20, 3, '#7a3b1e')
-    R(45, 93, 4, 4, '#e48c8c'); R(55, 93, 4, 4, '#e48c8c')
-    R(45, 95, 14, 9, '#f3aaa8'); R(45, 95, 14, 1, '#ffc8c4')
-    R(49, 99, 6, 4, '#e48c8c'); R(50, 100, 1, 2, '#8f4545'); R(53, 100, 1, 2, '#8f4545')
-    R(47, 97, 3, 1, '#5a2b2b'); R(54, 97, 3, 1, '#5a2b2b')
-  }
+  // 입점 첫 주: 사당 주인이 고른 고사 상 (마루 앞 가운데, gosa-art.js). 케이크 촛불 불꽃은 매 프레임
+  if (s.isNew) paintGosaHD(R, s.gosa)
   outline(c)
 }
 
@@ -457,7 +453,7 @@ function flame(c, mx, my, tier, t, seed) {
  * @param tier 초 밝기 0 · 1 · 2
  */
 export function drawShrineHD(c, plot, s, tier, t, screen) {
-  const key = `s|${s.slug}|${s.status}|${s.keeper ? 1 : 0}|${s.isNew ? 1 : 0}|${s.charm ? 1 : 0}|${(s.deco ?? []).join(',')}|${s.domain}|${screen ? 1 : 0}`
+  const key = `s|${s.slug}|${s.status}|${s.keeper ? 1 : 0}|${s.isNew ? gosaKey(s.gosa) : 0}|${s.charm ? 1 : 0}|${(s.deco ?? []).join(',')}|${s.domain}|${screen ? 1 : 0}`
   let cv = cache.get(key)
   if (!cv) {
     cv = canvas()
@@ -482,6 +478,15 @@ export function drawShrineHD(c, plot, s, tier, t, screen) {
     }
     // 처마 초롱 깜빡임
     for (const ax of [8, 94]) drawGlow(c, x0 + ax / 2, y0 + 49 / 2, 5, '#ffb347', 0.6 + (Math.floor(t / 260 + ax) % 3) * 0.12)
+    // 첫 주 축하 케이크 촛불 (그림 px → 맵 반 칸)
+    const cake = s.isNew && gosaFlameAt(s.gosa)
+    if (cake) {
+      drawGlow(c, x0 + cake[0] / 2, y0 + cake[1] / 2, 4, '#ffb347', 0.6)
+      gosaFlameHD((ax, ay, aw, ah, col) => {
+        c.fillStyle = col
+        c.fillRect(x0 + ax / 2, y0 + ay / 2, aw / 2, ah / 2)
+      }, t)
+    }
   }
 }
 
